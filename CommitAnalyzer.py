@@ -4,6 +4,11 @@ import tempfile
 import atexit
 import shutil
 import os
+import networkx as nx
+import matplotlib.pyplot as plt
+import tqdm
+
+from pyvis.network import Network
 
 class CommitAnalyzer:
 
@@ -18,6 +23,7 @@ class CommitAnalyzer:
             repo_folder : folder where repo is stored (same as url if local repo)
             repository_mining : RepositoryMining object to analyze the repo
             git_repo : GitRepository object
+            repo_files : list of files contained in the repo
             _tmp_dir : location of temp directory
         """
 
@@ -29,7 +35,14 @@ class CommitAnalyzer:
             self.repo_folder = url
 
         self.repository_mining = pydriller.RepositoryMining(self.repo_folder)
+
         self.git_repo = pydriller.GitRepository(self.repo_folder)
+
+        self.repo_files = [os.path.basename(file) for file in self.git_repo.files()]
+        self.total_commits = self.git_repo.total_commits()
+
+        self.commit_graph = nx.Graph()
+        self.commit_graph.add_nodes_from([(filename, {'number_modifications':0}) for filename in self.repo_files])
 
         atexit.register(self._cleanup)
 
@@ -89,13 +102,58 @@ class CommitAnalyzer:
                 # In this case, just ignore the errors.
                 shutil.rmtree(self._tmp_dir.name, ignore_errors=True)
 
+    def analyze_correlation(self):
+        """ Find files that are modified together (ie. in same commit).
+        Create an edge between them, and update its value based.
+        """
+
+        pbar = tqdm.tqdm(total=self.total_commits)
+        for commit in ca.repository_mining.traverse_commits():
+
+            modified_files =  [modification.filename for modification in commit.modifications]
+            pairs_of_modified_files = []
+            for i in range(len(modified_files)):
+                for j in range(i+1, len(modified_files)):
+                    pairs_of_modified_files.append((modified_files[i], modified_files[j]))
+
+            for edge in pairs_of_modified_files:
+
+                if self.commit_graph.has_edge(edge[0], edge[1]):
+                    self.commit_graph.edges[edge[0], edge[1]]['number_modifications_same_commit'] += 1
+                else:
+                    self.commit_graph.add_edge(edge[0], edge[1], number_modifications_same_commit=0)
+
+            pbar.update(1)
+        pbar.close()
+
+
+
 
 if __name__ == "__main__":
 
     url = "https://github.com/ishepard/pydriller.git"
+
+    print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
 
-    """
-    for commit in ca.repository_mining.traverse_commits():
-        print("Project {}, commit {}, date {}".format(commit.project_path, commit.hash, commit.author_date))
-    """
+    print("Running analysis")
+    ca.analyze_correlation()
+
+    
+    print("Drawing results")
+
+    # Layout
+    pos = nx.spring_layout(ca.commit_graph, weight='number_modifications_same_commit')
+
+    # Edge Width
+    edges = ca.commit_graph.edges()
+    number_time_modified_together = [ca.commit_graph[u][v]['number_modifications_same_commit'] for u,v in edges]
+    max_number_time_modified_together = max(number_time_modified_together)
+    width = [num / max_number_time_modified_together for num in number_time_modified_together]
+
+    # Draw
+    nx.draw(ca.commit_graph, pos=pos, with_labels=True, width=width)
+    plt.show()
+    
+
+    
