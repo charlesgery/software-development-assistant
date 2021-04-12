@@ -126,6 +126,37 @@ class CommitAnalyzer:
             pbar.update(1)
         pbar.close()
 
+    def draw_networkx(self):
+
+        # Layout
+        pos = nx.spring_layout(ca.commit_graph, weight='number_modifications_same_commit')
+
+        # Edge Width
+        edges = ca.commit_graph.edges()
+        number_time_modified_together = [ca.commit_graph[u][v]['number_modifications_same_commit'] for u,v in edges]
+        max_number_time_modified_together = max(number_time_modified_together)
+        width = [num / max_number_time_modified_together for num in number_time_modified_together]
+
+        nx.draw(self.commit_graph, pos=pos, with_labels=True, width=width)
+        pls.show()
+
+    def draw_pyvis(self):
+
+        # Edge Width
+        edges = self.commit_graph.edges()
+        number_time_modified_together = [self.commit_graph[u][v]['number_modifications_same_commit'] for u,v in edges]
+        max_number_time_modified_together = max(number_time_modified_together)
+
+        # Draw
+        nt = Network(height='100%', width='70%')
+        nt.from_nx(self.commit_graph)
+        
+
+        for edge in nt.get_edges():
+            edge['value'] = self.commit_graph[edge['from']][edge['to']]['number_modifications_same_commit'] / max_number_time_modified_together
+
+        nt.show_buttons(filter_=['physics'])
+        nt.show('nx.html')
 
 
 
@@ -138,22 +169,10 @@ if __name__ == "__main__":
 
     print("Running analysis")
     ca.analyze_correlation()
-
     
     print("Drawing results")
-
-    # Layout
-    pos = nx.spring_layout(ca.commit_graph, weight='number_modifications_same_commit')
-
-    # Edge Width
-    edges = ca.commit_graph.edges()
-    number_time_modified_together = [ca.commit_graph[u][v]['number_modifications_same_commit'] for u,v in edges]
-    max_number_time_modified_together = max(number_time_modified_together)
-    width = [num / max_number_time_modified_together for num in number_time_modified_together]
-
-    # Draw
-    nx.draw(ca.commit_graph, pos=pos, with_labels=True, width=width)
-    plt.show()
+    ca.draw_pyvis()
+    
     
 
     
