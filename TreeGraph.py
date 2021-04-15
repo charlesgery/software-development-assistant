@@ -38,7 +38,7 @@ class TreeGraph:
                 if self.graph.has_edge(node1, node2):
                     self.graph.edges[node1, node2]['number_modifications_same_commit'] += 1
                 else:
-                    self.graph.add_edge(node1, node2, number_modifications_same_commit=0)
+                    self.graph.add_edge(node1, node2, number_modifications_same_commit=1)
 
     def print(self):
         print(self.name)
