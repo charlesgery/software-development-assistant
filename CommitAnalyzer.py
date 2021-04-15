@@ -7,6 +7,7 @@ import os
 import networkx as nx
 import matplotlib.pyplot as plt
 import tqdm
+import zipfile
 
 from pyvis.network import Network
 from bokeh.io import output_file, show
@@ -49,6 +50,7 @@ class CommitAnalyzer:
 
         # Get a GitRepository object
         self.git_repo = pydriller.GitRepository(self.repo_folder)
+        self.git_repo2 = git.Repo(self.repo_folder)
 
         # Get list of files
         self.repo_files_paths = self.git_repo.files()
@@ -99,6 +101,7 @@ class CommitAnalyzer:
 
         self._tmp_dir = tempfile.TemporaryDirectory()
         clone_folder = self._tmp_dir.name
+        print(clone_folder)
 
         return clone_folder
 
@@ -130,6 +133,63 @@ class CommitAnalyzer:
                 # git directories because of read-only files.
                 # In this case, just ignore the errors.
                 shutil.rmtree(self._tmp_dir.name, ignore_errors=True)
+
+    def analyze_diffs(self):
+
+        
+        for commit in self.repository_mining.traverse_commits():
+
+            for modification in commit.modifications:
+                print(modification.diff_parsed)
+            
+        
+            
+    def find_history(self, line, path):
+
+        history = self.git_repo2.git.log('-L', f'{line},{line}:{path}').split('\n')
+        modified_in_commits = []
+
+        for line in history:
+            if line[0:6] == 'commit':
+                modified_in_commits.append(line[7:])
+        
+        related_lines = {}
+
+        for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
+
+            for modification in commit.modifications:
+
+                print(modification.filename)
+                
+                if modification.filename in self.filename_to_path and not modification.filename[-4:] == '.zip':
+
+                    # Get path to file to count number of lines
+                    filepath = self.repo_folder + '\\' + self.filename_to_path[modification.filename]
+                    with open(filepath) as f:
+                        for i, l in enumerate(f):
+                            pass
+                        linenumber = i + 1
+                    
+                    # Split file in group of 10 lines and check of they are linked to the modified line
+                    for i in range(1, linenumber, 10):
+                        if i + 10 > linenumber:
+                            history2 = self.git_repo2.git.log('-L', f'{i},{linenumber}:{self.filename_to_path[modification.filename]}').split('\n')
+                        else:
+                            history2 = self.git_repo2.git.log('-L', f'{i},{i+9}:{self.filename_to_path[modification.filename]}').split('\n')
+                        modified_in_commits2 = []
+
+                        for line in history2:
+                            if line[0:6] == 'commit':
+                                modified_in_commits2.append(line[7:])
+                       
+                        if commit.hash in modified_in_commits2:
+                            if modification.filename in related_lines:
+                                related_lines[modification.filename].append((i, i+9))
+                            else:
+                                related_lines[modification.filename] = [(i, i+9)]
+
+        print(related_lines)
+                    
 
     def analyze_correlation(self):
         """ Find files that are modified together (ie. in same commit).
@@ -192,21 +252,43 @@ class CommitAnalyzer:
                 # Create or update edge in TreeCommit graph
                 self.commit_tree_graph.add_edge(path_prefix_split, tree_commit_node_name1, tree_commit_node_name2)
 
-    def compute_correlation(self, node_name):
+    @staticmethod
+    def compute_correlation(node_name, commit_graph):
 
-        number_modifications = self.commit_graph.nodes[node_name]["number_modifications"]
+        number_modifications = commit_graph.nodes[node_name]["number_modifications"]
         neighbors_correlation = []
 
-        for neighbor in self.commit_graph.neighbors(node_name):
+        for neighbor in commit_graph.neighbors(node_name):
 
-            number_modifications_same_commit = self.commit_graph.edges[node_name, neighbor]["number_modifications_same_commit"]
+            number_modifications_same_commit = commit_graph.edges[node_name, neighbor]["number_modifications_same_commit"]
             neighbors_correlation.append((neighbor, 100*number_modifications_same_commit/number_modifications, number_modifications_same_commit))
         
         neighbors_correlation.sort(key=lambda x: x[1], reverse=True)
 
         print(f'Correlation of {node_name} (modified in {number_modifications} commits) with :')
-        for neighbor in neighbors_correlation:
-            print(f'{neighbor[0]} : {neighbor[1]}% (modified {neighbor[2]} times)')
+        for i, neighbor in enumerate(neighbors_correlation):
+            if i < 20:
+                print(f'{neighbor[0]} : {neighbor[1]}% (modified {neighbor[2]} times)')
+            else:
+                break
+
+    def compute_same_level_correlation(self, node_path):
+
+        def compute_same_level_correlation_iteration(tree_graph, splitted_path):
+
+            if len(splitted_path) == 1 and splitted_path[0] in tree_graph.kids:
+                self.compute_correlation(splitted_path[0], tree_graph.graph)
+            elif len(splitted_path) > 1 and splitted_path[0] in tree_graph.kids:
+                compute_same_level_correlation_iteration(tree_graph.kids[splitted_path[0]], splitted_path[1:])
+
+
+        tree_graph = self.commit_tree_graph
+
+        splitted_path = node_path.split('\\')
+        print(splitted_path)
+
+        compute_same_level_correlation_iteration(tree_graph, splitted_path)
+
 
     def draw_networkx(self):
 
@@ -410,8 +492,29 @@ class CommitAnalyzer:
 
 
 if __name__ == "__main__":
-
+    
     url = "https://github.com/ishepard/pydriller.git"
+
+    # CommitAnalyzer.draw_bokeh_test()
+    
+    print("Init CommitAnalyzer")
+    ca = CommitAnalyzer(url)
+    ca.find_history(37, 'tests/test_git_repository.py')
+    
+    print("Running analysis")
+    # ca.analyze_diffs()
+    """
+    ca.analyze_correlation()
+
+    ca.compute_correlation('git_repository.py', ca.commit_graph)
+    print("\n\n")
+    ca.compute_same_level_correlation('pydriller')
+    
+    print("Drawing results")
+    ca.draw_bokeh_commit_treegraph()
+    
+
+    url = "https://github.com/jonase/kibit.git"
 
     # CommitAnalyzer.draw_bokeh_test()
     
@@ -421,9 +524,11 @@ if __name__ == "__main__":
     print("Running analysis")
     ca.analyze_correlation()
 
-    ca.compute_correlation('.flake8')
+    ca.compute_correlation('driver.clj', ca.commit_graph)
+    print("\n\n")
+    ca.compute_same_level_correlation('kibit\\test')
     
-    """
     print("Drawing results")
-    ca.draw_bokeh()
+    ca.draw_bokeh_commit_treegraph()
     """
+    
