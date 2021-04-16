@@ -9,16 +9,11 @@ import matplotlib.pyplot as plt
 import tqdm
 import zipfile
 
-from pyvis.network import Network
-from bokeh.io import output_file, show
-from bokeh.models import (BoxZoomTool, Circle, HoverTool, TapTool, BoxSelectTool,
-                          MultiLine, Plot, Range1d, ResetTool, GraphRenderer, StaticLayoutProvider,
-                          EdgesAndLinkedNodes, NodesAndLinkedEdges, WheelZoomTool, PanTool)
-from bokeh.palettes import Spectral4
-from bokeh.plotting import from_networkx, figure
 
 import TreeGraph
 import compute_layout
+import CommitGraphDrawer
+import CommitTreeGraphDrawer
 
 class CommitAnalyzer:
 
@@ -33,7 +28,14 @@ class CommitAnalyzer:
             repo_folder : folder where repo is stored (same as url if local repo)
             repository_mining : RepositoryMining object to analyze the repo
             git_repo : GitRepository object
+            git_repo2 : PyGit Repo object
+            repo_files_path : list of paths to the files contained in the repo
             repo_files : list of files contained in the repo
+            total_commits : total number of commits
+            commit_graph : networkx graph object of files in the repo
+            filename_to_path : dict to get path of file in repo given its name
+            commit_tree_graph : TreeGraph object of correlation between files
+            path_prefix : path prefix specific to the computer you are using
             _tmp_dir : location of temp directory
         """
 
@@ -132,19 +134,13 @@ class CommitAnalyzer:
                 # on Windows, Python 3.5, 3.6, 3.7 are not able to delete
                 # git directories because of read-only files.
                 # In this case, just ignore the errors.
-                shutil.rmtree(self._tmp_dir.name, ignore_errors=True)
-
-    def analyze_diffs(self):
-
-        
-        for commit in self.repository_mining.traverse_commits():
-
-            for modification in commit.modifications:
-                print(modification.diff_parsed)
-            
+                shutil.rmtree(self._tmp_dir.name, ignore_errors=True)            
         
             
     def find_history(self, line, path):
+        """ Find lines in other files that are related to line in a given file,
+        based on commit history.
+        """
 
         history = self.git_repo2.git.log('-L', f'{line},{line}:{path}').split('\n')
         modified_in_commits = []
@@ -192,8 +188,8 @@ class CommitAnalyzer:
                     
 
     def analyze_correlation(self):
-        """ Find files that are modified together (ie. in same commit).
-        Create an edge between them, and update its value based.
+        """ Find files/folders that are modified together (ie. in same commit).
+        Update commit and TreeCommit graphs accordingly.
         """
 
         pbar = tqdm.tqdm(total=self.total_commits)
@@ -216,6 +212,9 @@ class CommitAnalyzer:
         pbar.close()
 
     def analyze_correlation_commit_graph(self, modified_files, pairs_of_modified_files):
+        """ Find files that are modified together (ie. in same commit).
+        Create an edge between them, and update its value.
+        """
 
         for modified_file in modified_files:
             if modified_file in self.commit_graph.nodes:
@@ -230,6 +229,9 @@ class CommitAnalyzer:
                     self.commit_graph.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
 
     def analyze_correlation_treecommit_graph(self, pairs_of_modified_files):
+        """ Find files/folders that are modified together (ie. in same commit).
+        Create an edge between them, and update its value.
+        """
 
         for (node1, node2) in pairs_of_modified_files:
 
@@ -254,6 +256,9 @@ class CommitAnalyzer:
 
     @staticmethod
     def compute_correlation(node_name, commit_graph):
+        """ Compute correlation between a file and another one in commit graph based on value of edge.
+        Correlation = Value of edge / max value of edge for this node
+        """
 
         number_modifications = commit_graph.nodes[node_name]["number_modifications"]
         neighbors_correlation = []
@@ -273,6 +278,9 @@ class CommitAnalyzer:
                 break
 
     def compute_same_level_correlation(self, node_path):
+        """ Compute correlation between a file/folder and another one in commit TreeGraph based on value of edge.
+        Correlation = Value of edge / max value of edge for this node
+        """
 
         def compute_same_level_correlation_iteration(tree_graph, splitted_path):
 
@@ -290,245 +298,25 @@ class CommitAnalyzer:
         compute_same_level_correlation_iteration(tree_graph, splitted_path)
 
 
-    def draw_networkx(self):
-
-        # Layout
-        pos = nx.spring_layout(self.commit_graph, weight='number_modifications_same_commit')
-
-        # Edge Width
-        edges = self.commit_graph.edges()
-        number_time_modified_together = [self.commit_graph[u][v]['number_modifications_same_commit'] for u,v in edges]
-        max_number_time_modified_together = max(number_time_modified_together)
-        width = [num / max_number_time_modified_together for num in number_time_modified_together]
-
-        nx.draw(self.commit_graph, pos=pos, with_labels=True, width=width)
-        plt.show()
-
-    def draw_pyvis(self):
-
-        # Edge Width
-        edges = self.commit_graph.edges()
-        number_time_modified_together = [self.commit_graph[u][v]['number_modifications_same_commit'] for u,v in edges]
-        max_number_time_modified_together = max(number_time_modified_together)
-
-        # Draw
-        nt = Network(height='100%', width='70%')
-        nt.from_nx(self.commit_graph)
-        
-
-        for edge in nt.get_edges():
-            edge['value'] = self.commit_graph[edge['from']][edge['to']]['number_modifications_same_commit'] / max_number_time_modified_together
-
-        for node_id in nt.get_nodes():
-            node = nt.get_node(node_id)
-            node['color'] = self.rgb_to_hex((self.commit_graph.nodes[node_id]['number_modifications'], 0, 0))
-            print(node['color'])
-
-        nt.show_buttons(filter_=['physics'])
-        nt.show('nx.html')
-
-    def draw_bokeh(self):
-
-        plot = Plot(sizing_mode="scale_height", x_range=Range1d(-1.5,1.5), y_range=Range1d(-1.5,1.5))
-        plot.add_tools(HoverTool(tooltips=[("index", "@index")]), TapTool(), WheelZoomTool(), ResetTool(), PanTool())
-
-        graph_renderer = from_networkx(self.commit_graph, nx.spring_layout, scale=1, center=(0,0), k=1)
-
-        graph_renderer.node_renderer.glyph = Circle(size=15, fill_color=Spectral4[0])
-        graph_renderer.node_renderer.selection_glyph = Circle(size=15, fill_color=Spectral4[2])
-        graph_renderer.node_renderer.hover_glyph = Circle(size=15, fill_color=Spectral4[1])
-
-        graph_renderer.edge_renderer.glyph = MultiLine(line_color="#CCCCCC", line_alpha=0.8, line_width=1)
-        graph_renderer.edge_renderer.selection_glyph = MultiLine(line_color=Spectral4[2], line_width=5)
-        graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
-
-        graph_renderer.selection_policy = NodesAndLinkedEdges()
-
-        plot.renderers.append(graph_renderer)
-
-        output_file("interactive_graphs.html")
-        show(plot)
-
-    def draw_bokeh_commit_treegraph(self):
-
-        def draw_bokeh_commit_treegraph_iteration(treegraph, center=(0,0), node_radius=0.5):
-
-            graph_renderer = GraphRenderer()
-
-            graph_renderer.node_renderer.glyph = Circle(radius="nodes_radius", fill_color="fill_color")
-            graph_renderer.node_renderer.selection_glyph = Circle(size=node_radius, fill_color=Spectral4[2])
-            graph_renderer.node_renderer.hover_glyph = Circle(size=node_radius, fill_color=Spectral4[1])
-            graph_renderer.edge_renderer.glyph = MultiLine(line_color="#CCCCCC", line_alpha=0.8, line_width=5)
-            graph_renderer.edge_renderer.selection_glyph = MultiLine(line_color=Spectral4[2], line_width=5)
-            graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
-
-            graph_renderer.selection_policy = NodesAndLinkedEdges()
-            graph_renderer.inspection_policy = EdgesAndLinkedNodes()
-
-            index, color, nodes_radius = [], [], []
-            for node in treegraph.graph.nodes:
-                index.append(node)
-                if treegraph.kids[node].is_file:
-                    color.append(Spectral4[0])
-                    nodes_radius.append(0.05)
-
-                else:
-                    color.append(Spectral4[1])
-                    nodes_radius.append(node_radius)
-            
-            graph_renderer.node_renderer.data_source.data = dict(
-                index=index,
-                fill_color=color,
-                nodes_radius=nodes_radius)
-
-            start, end = [], []
-            for (node1, node2) in treegraph.graph.edges:
-                start.append(node1)
-                end.append(node2)
-
-            graph_renderer.edge_renderer.data_source.data = dict(
-                start=start,
-                end=end)
-
-            node_size = dict(zip(treegraph.graph.nodes, nodes_radius))
-            pos = compute_layout.get_fruchterman_reingold_layout(list(zip(start, end)), scale=(2,2), origin=(-1, -1), node_size=node_size)
-            #pos = nx.spring_layout(treegraph.graph, scale=1, center=center, k=node_radius*5)
-
-            graph_renderer.layout_provider = StaticLayoutProvider(graph_layout=pos)
-
-            plot.renderers.append(graph_renderer)
-
-
-        plot = figure(title="Graph layout demonstration", x_range=(-1.1,1.1),
-                    y_range=(-1.1,1.1), tools="", toolbar_location=None, sizing_mode="scale_height")
-
-        plot.add_tools(HoverTool(tooltips=[("index", "@index")]), TapTool(), BoxSelectTool())
-
-        draw_bokeh_commit_treegraph_iteration(self.commit_tree_graph)
-
-        # specify the name of the output file
-        output_file('graph.html')
-
-        # display the plot
-        show(plot)
-
-        
-
-
-    @staticmethod
-    def draw_bokeh_test():
-
-
-        plot = figure(title="Graph layout demonstration", x_range=(-1.1,1.1),
-                    y_range=(-1.1,1.1), tools="", toolbar_location=None, sizing_mode="scale_height")
-
-        # Graph 1
-        N = 4
-        node_indices = list(range(4))
-
-        graph_renderer = GraphRenderer()
-
-        graph_renderer.node_renderer.glyph = Circle(radius=0.3, fill_color=Spectral4[0])
-        graph_renderer.edge_renderer.glyph = MultiLine(line_color="#CCCCCC", line_alpha=0.8, line_width=5)
-
-        graph_renderer.node_renderer.data_source.data = dict(
-            index=node_indices,
-            fill_color=Spectral4)
-
-        graph_renderer.edge_renderer.data_source.data = dict(
-            start=[0]*N,
-            end=node_indices)
-
-        x = [0, 0.5, -0.5, 1]
-        y = [0.5, 0, -0.5, -1]
-
-        graph_layout = dict(zip(node_indices, zip(x, y)))
-
-        graph_renderer.layout_provider = StaticLayoutProvider(graph_layout=graph_layout)
-
-        # render the graph
-        plot.renderers.append(graph_renderer)
-
-
-        ##################################################
-        # Graph 2
-        N = 4
-        node_indices = list(range(4))
-
-        graph_renderer2 = GraphRenderer()
-
-        graph_renderer2.node_renderer.glyph = Circle(radius=0.03, fill_color=Spectral4[1])
-        graph_renderer2.edge_renderer.glyph = MultiLine(line_color="#CCCCCC", line_alpha=0.8, line_width=5)
-
-        graph_renderer2.node_renderer.data_source.data = dict(
-            index=node_indices,
-            fill_color=Spectral4)
-
-        graph_renderer2.edge_renderer.data_source.data = dict(
-            start=[0]*N,
-            end=node_indices)
-
-        x = [0.05, 0, -0.05, 0]
-        y = [0.5, 0.48, 0.5, 0.7]
-
-        graph_layout = dict(zip(node_indices, zip(x, y)))
-
-        graph_renderer2.layout_provider = StaticLayoutProvider(graph_layout=graph_layout)
-
-        # render the graph
-        plot.renderers.append(graph_renderer2)
-
-        # specify the name of the output file
-        output_file('graph.html')
-
-        # display the plot
-        show(plot)
-
-    @staticmethod
-    def rgb_to_hex(rgb):
-
-        return '#%02x%02x%02x' % rgb
-
-
 
 if __name__ == "__main__":
     
     url = "https://github.com/ishepard/pydriller.git"
-
-    # CommitAnalyzer.draw_bokeh_test()
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
-    ca.find_history(37, 'tests/test_git_repository.py')
-    
-    print("Running analysis")
-    # ca.analyze_diffs()
-    """
-    ca.analyze_correlation()
 
-    ca.compute_correlation('git_repository.py', ca.commit_graph)
-    print("\n\n")
-    ca.compute_same_level_correlation('pydriller')
-    
-    print("Drawing results")
-    ca.draw_bokeh_commit_treegraph()
-    
 
-    url = "https://github.com/jonase/kibit.git"
-
-    # CommitAnalyzer.draw_bokeh_test()
-    
-    print("Init CommitAnalyzer")
-    ca = CommitAnalyzer(url)
+    # ca.find_history(37, 'tests/test_git_repository.py')
     
     print("Running analysis")
     ca.analyze_correlation()
 
-    ca.compute_correlation('driver.clj', ca.commit_graph)
-    print("\n\n")
-    ca.compute_same_level_correlation('kibit\\test')
+    # ca.compute_correlation('git_repository.py', ca.commit_graph)
+    # print("\n\n")
+    # ca.compute_same_level_correlation('pydriller')
     
     print("Drawing results")
-    ca.draw_bokeh_commit_treegraph()
-    """
+    drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    drawer.draw_bokeh()
     
