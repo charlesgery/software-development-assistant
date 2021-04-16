@@ -63,6 +63,7 @@ class CommitAnalyzer:
         self.commit_graph = nx.Graph()
         self.commit_graph.add_nodes_from([(filename, {'number_modifications': 0, 'index': filename}) for filename in self.repo_files])
         print([self.commit_graph.nodes[node]["index"] for node in self.commit_graph.nodes])
+        print('\n\n')
 
         # Create a dict mapping filename to path in repo
         self.filename_to_path = {}
@@ -137,25 +138,17 @@ class CommitAnalyzer:
                 shutil.rmtree(self._tmp_dir.name, ignore_errors=True)            
         
             
-    def find_history(self, line, path):
+    def find_related_lines(self, start_line, end_line, path):
         """ Find lines in other files that are related to line in a given file,
         based on commit history.
         """
 
-        history = self.git_repo2.git.log('-L', f'{line},{line}:{path}').split('\n')
-        modified_in_commits = []
-
-        for line in history:
-            if line[0:6] == 'commit':
-                modified_in_commits.append(line[7:])
-        
+        modified_in_commits = self.get_commits_that_modified_line(start_line, end_line, path)
         related_lines = {}
 
         for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
 
             for modification in commit.modifications:
-
-                print(modification.filename)
                 
                 if modification.filename in self.filename_to_path and not modification.filename[-4:] == '.zip':
 
@@ -169,23 +162,64 @@ class CommitAnalyzer:
                     # Split file in group of 10 lines and check of they are linked to the modified line
                     for i in range(1, linenumber, 10):
                         if i + 10 > linenumber:
-                            history2 = self.git_repo2.git.log('-L', f'{i},{linenumber}:{self.filename_to_path[modification.filename]}').split('\n')
+                            modified_in_commits2 = self.get_commits_that_modified_line(i, linenumber, self.filename_to_path[modification.filename])
                         else:
-                            history2 = self.git_repo2.git.log('-L', f'{i},{i+9}:{self.filename_to_path[modification.filename]}').split('\n')
-                        modified_in_commits2 = []
-
-                        for line in history2:
-                            if line[0:6] == 'commit':
-                                modified_in_commits2.append(line[7:])
+                            modified_in_commits2 = self.get_commits_that_modified_line(i, i+9, self.filename_to_path[modification.filename])
                        
                         if commit.hash in modified_in_commits2:
                             if modification.filename in related_lines:
-                                related_lines[modification.filename].append((i, i+9))
+                                if not self.interval_contained_in_list(related_lines[modification.filename], (i, i+9)):
+                                    self.insert_interval_in_list(related_lines[modification.filename], (i, i+9))
                             else:
                                 related_lines[modification.filename] = [(i, i+9)]
 
         print(related_lines)
+
+    def get_commits_that_modified_line(self, start_line, end_line, path):
+
+        history = self.git_repo2.git.log('-L', f'{start_line},{end_line}:{path}').split('\n')
+        modified_in_commits = []
+
+        for line in history:
+            if line[0:6] == 'commit':
+                modified_in_commits.append(line[7:])
+        
+        return modified_in_commits
                     
+    @staticmethod
+    def interval_contained_in_list(list_intervals, interval):
+
+        for (a, b) in list_intervals:
+
+            if a <= interval[0] and interval[1] <= b:
+                return True
+        
+        return False
+
+    @staticmethod
+    def insert_interval_in_list(list_intervals, interval):
+
+        merge_left, merge_right = False, False
+        for (a, b) in list_intervals:
+            if b == interval[0] - 1:
+                merge_left = True
+                merge_left_pair = (a, b)
+            if a == interval[1] + 1:
+                merge_right = True
+                merge_right_pair = (a, b)
+        if merge_left and merge_right:
+            list_intervals.remove(merge_left_pair)
+            list_intervals.remove(merge_right_pair)
+            list_intervals.append((merge_left_pair[0], merge_right_pair[1]))
+        elif merge_left:
+            list_intervals.remove(merge_left_pair)
+            list_intervals.append((merge_left_pair[0], interval[1]))
+        elif merge_right:
+            list_intervals.remove(merge_right_pair)
+            list_intervals.append((interval[0], merge_right_pair[1]))
+        else:
+            list_intervals.append(interval)
+
 
     def analyze_correlation(self):
         """ Find files/folders that are modified together (ie. in same commit).
@@ -307,8 +341,9 @@ if __name__ == "__main__":
     ca = CommitAnalyzer(url)
 
 
-    # ca.find_history(37, 'tests/test_git_repository.py')
+    ca.find_related_lines(34, 40, 'pydriller/domain/developer.py')
     
+    '''
     print("Running analysis")
     ca.analyze_correlation()
 
@@ -319,4 +354,5 @@ if __name__ == "__main__":
     print("Drawing results")
     drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
     drawer.draw_bokeh()
+    '''
     
