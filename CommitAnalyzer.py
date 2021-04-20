@@ -145,35 +145,103 @@ class CommitAnalyzer:
 
         modified_in_commits = self.get_commits_that_modified_line(start_line, end_line, path)
         related_lines = {}
+        line_history = {}
 
         for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
 
-            for modification in commit.modifications:
-                
-                if modification.filename in self.filename_to_path and not modification.filename[-4:] == '.zip':
+            for modification in tqdm.tqdm(commit.modifications):
+
+                path = path.replace("/", "\\")
+                if modification.filename in self.filename_to_path and not modification.filename[-4:] == '.zip' and self.filename_to_path[modification.filename] != path:
 
                     # Get path to file to count number of lines
                     filepath = self.repo_folder + '\\' + self.filename_to_path[modification.filename]
-                    with open(filepath) as f:
-                        for i, l in enumerate(f):
-                            pass
-                        linenumber = i + 1
+                    if os.path.getsize(filepath):
+                        with open(filepath) as f:
+                            for i, _ in enumerate(f):
+                                pass
+                            linenumber = i + 1
+                    else:
+                        linenumber = 0
                     
                     # Split file in group of 10 lines and check of they are linked to the modified line
-                    for i in range(1, linenumber, 10):
-                        if i + 10 > linenumber:
-                            modified_in_commits2 = self.get_commits_that_modified_line(i, linenumber, self.filename_to_path[modification.filename])
-                        else:
-                            modified_in_commits2 = self.get_commits_that_modified_line(i, i+9, self.filename_to_path[modification.filename])
-                       
-                        if commit.hash in modified_in_commits2:
-                            if modification.filename in related_lines:
-                                if not self.interval_contained_in_list(related_lines[modification.filename], (i, i+9)):
-                                    self.insert_interval_in_list(related_lines[modification.filename], (i, i+9))
-                            else:
-                                related_lines[modification.filename] = [(i, i+9)]
+                    if linenumber > 0:
+                        self.get_related_lines2(related_lines, linenumber, modification.filename, commit.hash, line_history)
 
-        print(related_lines)
+        self.display_related_lines(related_lines)
+
+    def get_related_lines(self, related_lines, linenumber, filename, commit_hash):
+
+        for i in range(1, linenumber, 10):
+            if i + 10 > linenumber:
+                modified_in_commits2 = self.get_commits_that_modified_line(i, linenumber, self.filename_to_path[filename])
+            else:
+                modified_in_commits2 = self.get_commits_that_modified_line(i, i+9, self.filename_to_path[filename])
+        
+            if commit_hash in modified_in_commits2:
+                if filename in related_lines:
+                    if i not in related_lines[filename]:
+                        for j in range(10):
+                            related_lines[filename][i+j] += 1
+                    else:
+                        for j in range(10):
+                            related_lines[filename][i+j] = 1
+                    if not self.interval_contained_in_list(related_lines[filename], (i, i+9)):
+                        self.insert_interval_in_list(related_lines[filename], (i, i+9))
+                else:
+                    related_lines[filename] = {i:1}
+                    for j in range(1, 10):
+                            related_lines[filename][i+j] = 1
+                    
+
+
+    def get_related_lines2(self, related_lines, linenumber, filename, commit_hash, line_history):
+
+        if filename not in line_history:
+            line_history[filename] = {}
+            for i in range(1, linenumber):
+                modified_in_commits2 = self.get_commits_that_modified_line(i, i, self.filename_to_path[filename])
+                line_history[filename][i] = modified_in_commits2
+
+        for i in range(1, linenumber):
+            if commit_hash in line_history[filename][i]:
+                if filename in related_lines:
+                    if i in related_lines[filename]:
+                        related_lines[filename][i] += 1
+                    else:
+                        related_lines[filename][i] = 1
+                    
+                else:
+                    related_lines[filename] = {i:1}
+
+    @staticmethod
+    def display_related_lines(related_lines):
+
+        most_correlated_lines = []
+
+        for filename in related_lines:
+
+            file_correlation_string = ''
+            file_correlation_string += f'File {filename}'
+            lines = []
+            for key in related_lines[filename]:
+                lines.append(key)
+                most_correlated_lines.append((key, filename, related_lines[filename][key]))
+            lines.sort()
+            start, end = lines[0], lines[0]
+            for i in range(1, len(lines)):
+                if lines[i] == end + 1:
+                    end += 1
+                else:
+                    file_correlation_string += f' {start}-{end}'
+                    start, end = lines[i], lines[i]
+            file_correlation_string += f' {start}-{end}'
+            print(file_correlation_string)
+
+        most_correlated_lines.sort(key=lambda x: x[2], reverse=True)
+        print(most_correlated_lines[:10])
+                    
+
 
     def get_commits_that_modified_line(self, start_line, end_line, path):
 
@@ -306,7 +374,7 @@ class CommitAnalyzer:
 
         print(f'Correlation of {node_name} (modified in {number_modifications} commits) with :')
         for i, neighbor in enumerate(neighbors_correlation):
-            if i < 20:
+            if i < 5    0:
                 print(f'{neighbor[0]} : {neighbor[1]}% (modified {neighbor[2]} times)')
             else:
                 break
@@ -341,18 +409,18 @@ if __name__ == "__main__":
     ca = CommitAnalyzer(url)
 
 
-    ca.find_related_lines(34, 40, 'pydriller/domain/developer.py')
     
-    '''
+    
+    
     print("Running analysis")
     ca.analyze_correlation()
 
-    # ca.compute_correlation('git_repository.py', ca.commit_graph)
+    ca.find_related_lines(94, 101, 'pydriller/git_repository.py')
+    ca.compute_correlation('git_repository.py', ca.commit_graph)
     # print("\n\n")
     # ca.compute_same_level_correlation('pydriller')
     
-    print("Drawing results")
-    drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
-    drawer.draw_bokeh()
-    '''
+    #print("Drawing results")
+    #drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    #drawer.draw_bokeh()
     
