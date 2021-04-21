@@ -62,6 +62,10 @@ class CommitAnalyzer:
         # Create graph of all commits
         self.commit_graph = nx.Graph()
 
+        # Create graph of all commits lines where involved in
+        # Create graph of all commits
+        self.commit_graph_lines = nx.Graph()
+
 
         # Create TreeGraph
         self.commit_tree_graph = TreeGraph.TreeGraph(self._get_repo_name_from_url(self.url), False)
@@ -71,10 +75,11 @@ class CommitAnalyzer:
         self.path_prefix = os.path.commonpath(repo_files_paths)
         self.repo_files_path = []
         for file_path in repo_files_paths:
-            file_path = file_path[len(self.path_prefix)+1:]
-            self.repo_files_path.append(file_path)
-            split_path = file_path.split('\\')
-            self.commit_tree_graph.add_children(split_path)
+            if file_path[-4:] not in ['.zip', '.gif']:
+                file_path = file_path[len(self.path_prefix)+1:]
+                self.repo_files_path.append(file_path)
+                split_path = file_path.split('\\')
+                self.commit_tree_graph.add_children(split_path)
         self.commit_graph.add_nodes_from([(file_path, {'number_modifications': 0, 'index': file_path}) for file_path in self.repo_files_path])
 
         # Remove temp folder at end of execution
@@ -310,7 +315,7 @@ class CommitAnalyzer:
             list_intervals.append(interval)
 
 
-    def analyze_correlation(self):
+    def analyze_correlation(self, treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=False):
         """ Find files/folders that are modified together (ie. in same commit).
         Update commit and TreeCommit graphs accordingly.
         """
@@ -326,13 +331,19 @@ class CommitAnalyzer:
                     pairs_of_modified_files.append((modified_files[i], modified_files[j]))
 
             # TreeCommit Graph
-            self.analyze_correlation_treecommit_graph(pairs_of_modified_files)
+            if treecommit_analysis:
+                self.analyze_correlation_treecommit_graph(pairs_of_modified_files)
 
             # Commit Graph
-            self.analyze_correlation_commit_graph(modified_files, pairs_of_modified_files)
+            if commit_analysis:
+                self.analyze_correlation_commit_graph(modified_files, pairs_of_modified_files)
 
             pbar.update(1)
         pbar.close()
+
+        # Commit Graph lines
+        if commit_lines_analysis:
+            self.analyze_correlation_commit_lines_graph()
 
     def analyze_correlation_commit_graph(self, modified_files, pairs_of_modified_files):
         """ Find files that are modified together (ie. in same commit).
@@ -374,6 +385,60 @@ class CommitAnalyzer:
 
                 # Create or update edge in TreeCommit graph
                 self.commit_tree_graph.add_edge(path_prefix_split, tree_commit_node_name1, tree_commit_node_name2)
+
+    def analyze_correlation_commit_lines_graph(self):
+
+        commit_to_lines = {}
+
+        # Print analyzing all the lines of the repo
+        print('Print analyzing all the lines of the repo')
+        for file_path in tqdm.tqdm(self.repo_files_path):
+
+            
+            # Get path to file and count number of lines
+            complete_file_path = self.repo_folder + '\\' + file_path
+            if os.path.getsize(complete_file_path):
+                with open(complete_file_path, 'rb') as f:
+                    for i, _ in enumerate(f):
+                        pass
+                    linenumber = i + 1
+            else:
+                linenumber = 0
+
+            for line in range(1, linenumber):
+
+                modified_in_commits = self.get_commits_that_modified_line(line, line, file_path)
+                self.commit_graph_lines.add_node(f'{file_path}:{line}', number_modifications=len(modified_in_commits))
+
+                for commit in modified_in_commits:
+
+                    if commit in commit_to_lines:
+                        commit_to_lines[commit].append(f'{file_path}:{line}')
+                    else:
+                        commit_to_lines[commit] = [f'{file_path}:{line}']
+
+        # Building the graph
+        print('\n\nBuilding the graph')
+        for (commit, list_lines) in tqdm.tqdm(commit_to_lines.items()):
+
+            pairs_of_modified_lines = []
+            for i in range(len(list_lines)):
+                for j in range(i+1, len(list_lines)):
+                    pairs_of_modified_lines.append((list_lines[i], list_lines[j]))
+
+            for edge in pairs_of_modified_lines:
+
+                if edge[0] in self.commit_graph_lines.nodes and edge[1] in self.commit_graph_lines.nodes:
+                    if self.commit_graph_lines.has_edge(edge[0], edge[1]):
+                        self.commit_graph_lines.edges[edge[0], edge[1]]['number_modifications_same_commit'] += 1
+                    else:
+                        self.commit_graph_lines.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
+
+        
+
+
+
+
 
     @staticmethod
     def compute_correlation(node_name, commit_graph):
@@ -432,7 +497,7 @@ if __name__ == "__main__":
     
     
     print("Running analysis")
-    ca.analyze_correlation()
+    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
     print('\n\n')
     #ca.compute_correlation('pydriller\\git_repository.py', ca.commit_graph)
     
@@ -442,9 +507,9 @@ if __name__ == "__main__":
     # ca.find_lines_related_to_function('get_head', 'pydriller/git_repository.py')
     
     # print("\n\n")
-    ca.compute_same_level_correlation('pydriller')
+    # ca.compute_same_level_correlation('pydriller')
     
     #print("Drawing results")
-    drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
-    drawer.draw_bokeh()
+    # drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    # drawer.draw_bokeh()
     
