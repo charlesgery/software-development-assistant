@@ -140,7 +140,19 @@ class CommitAnalyzer:
                 # on Windows, Python 3.5, 3.6, 3.7 are not able to delete
                 # git directories because of read-only files.
                 # In this case, just ignore the errors.
-                shutil.rmtree(self._tmp_dir.name, ignore_errors=True)            
+                shutil.rmtree(self._tmp_dir.name, ignore_errors=True)
+
+    def save_graph(self, G, path):
+
+        nx.readwrite.gpickle.write_gpickle(G, path)
+
+    def load_commit_graph(self, path):
+
+        self.commit_graph = nx.readwrite.gpickle.read_gpickle(path)
+
+    def load_commit_graph_lines(self, path):
+
+        self.commit_graph_lines = nx.readwrite.gpickle.read_gpickle(path)
         
     def find_lines_related_to_function(self, function_name, path):
 
@@ -463,6 +475,37 @@ class CommitAnalyzer:
             else:
                 break
 
+    @staticmethod
+    def compute_correlation_reverse(node_name, commit_graph, alpha):
+        """ Compute correlation between a file and another one in commit graph based on value of edge.
+        Correlation = Value of edge / max value of edge for this node
+        """
+
+        number_modifications = commit_graph.nodes[node_name]["number_modifications"]
+        neighbors_correlation = []
+
+        for neighbor in commit_graph.neighbors(node_name):
+
+            number_modifications_same_commit = commit_graph.edges[node_name, neighbor]["number_modifications_same_commit"]
+
+            number_modifications_reverse = commit_graph.nodes[neighbor]["number_modifications"]
+            number_modifications_same_commit_reverse = commit_graph.edges[neighbor, node_name]["number_modifications_same_commit"]
+
+            node1_correlation = number_modifications_same_commit / number_modifications
+            node2_correlation = number_modifications_same_commit_reverse / number_modifications_reverse
+            correlation = 100 * ((1 + alpha) * node1_correlation - alpha * node2_correlation) / (1 + alpha)
+            neighbors_correlation.append((neighbor, correlation, number_modifications_same_commit))
+        
+        neighbors_correlation.sort(key=lambda x: x[1], reverse=True)
+
+        print(f'Correlation of {node_name} (modified in {number_modifications} commits) with :')
+        for i, neighbor in enumerate(neighbors_correlation):
+            if i < 50:
+                print(f'{neighbor[0]} : {neighbor[1]}% (modified {neighbor[2]} times)')
+            else:
+                break
+
+
     def compute_same_level_correlation(self, node_path):
         """ Compute correlation between a file/folder and another one in commit TreeGraph based on value of edge.
         Correlation = Value of edge / max value of edge for this node
@@ -497,9 +540,12 @@ if __name__ == "__main__":
     
     
     print("Running analysis")
-    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
+    #ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
     print('\n\n')
-    #ca.compute_correlation('pydriller\\git_repository.py', ca.commit_graph)
+    #ca.save_graph(ca.commit_graph_lines, './commit_graph_lines.bz2')
+    ca.load_commit_graph_lines('./commit_graph_lines.bz2')
+    ca.load_commit_graph('./commit_graph.bz2')
+    ca.compute_correlation_reverse('pydriller\\git_repository.py', ca.commit_graph, 0.5)
     
     print('\n\n')
     #ca.find_lines_related_to_lines(94, 101, 'pydriller/git_repository.py')
