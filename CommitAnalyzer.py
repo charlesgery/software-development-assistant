@@ -75,13 +75,13 @@ class CommitAnalyzer:
         self.path_prefix = os.path.commonpath(repo_files_paths)
         self.repo_files_path = []
         for file_path in repo_files_paths:
-            if file_path[-4:] not in ['.zip', '.gif']:
+            _, file_extension = os.path.splitext(file_path)
+            if file_extension not in ['.zip', '.gif', '.png']:
                 file_path = file_path[len(self.path_prefix)+1:]
                 self.repo_files_path.append(file_path)
                 split_path = file_path.split('\\')
                 self.commit_tree_graph.add_children(split_path)
         self.commit_graph.add_nodes_from([(file_path, {'number_modifications': 0, 'index': file_path}) for file_path in self.repo_files_path])
-
         # Remove temp folder at end of execution
         atexit.register(self._cleanup)
 
@@ -332,26 +332,27 @@ class CommitAnalyzer:
         Update commit and TreeCommit graphs accordingly.
         """
 
-        pbar = tqdm.tqdm(total=self.total_commits)
-        for commit in self.repository_mining.traverse_commits():
+        if treecommit_analysis or commit_analysis:
+            pbar = tqdm.tqdm(total=self.total_commits)
+            for commit in self.repository_mining.traverse_commits():
 
-            modified_files =  [modification.new_path for modification in commit.modifications]
+                modified_files =  [modification.new_path for modification in commit.modifications]
 
-            pairs_of_modified_files = []
-            for i in range(len(modified_files)):
-                for j in range(i+1, len(modified_files)):
-                    pairs_of_modified_files.append((modified_files[i], modified_files[j]))
+                pairs_of_modified_files = []
+                for i in range(len(modified_files)):
+                    for j in range(i+1, len(modified_files)):
+                        pairs_of_modified_files.append((modified_files[i], modified_files[j]))
 
-            # TreeCommit Graph
-            if treecommit_analysis:
-                self.analyze_correlation_treecommit_graph(pairs_of_modified_files)
+                # TreeCommit Graph
+                if treecommit_analysis:
+                    self.analyze_correlation_treecommit_graph(pairs_of_modified_files)
 
-            # Commit Graph
-            if commit_analysis:
-                self.analyze_correlation_commit_graph(modified_files, pairs_of_modified_files)
+                # Commit Graph
+                if commit_analysis:
+                    self.analyze_correlation_commit_graph(modified_files, pairs_of_modified_files)
 
-            pbar.update(1)
-        pbar.close()
+                pbar.update(1)
+            pbar.close()
 
         # Commit Graph lines
         if commit_lines_analysis:
@@ -406,7 +407,7 @@ class CommitAnalyzer:
         print('Print analyzing all the lines of the repo')
         for file_path in tqdm.tqdm(self.repo_files_path):
 
-            
+            print(file_path)
             # Get path to file and count number of lines
             complete_file_path = self.repo_folder + '\\' + file_path
             if os.path.getsize(complete_file_path):
@@ -445,10 +446,6 @@ class CommitAnalyzer:
                         self.commit_graph_lines.edges[edge[0], edge[1]]['number_modifications_same_commit'] += 1
                     else:
                         self.commit_graph_lines.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
-
-        
-
-
 
 
 
@@ -526,26 +523,74 @@ class CommitAnalyzer:
 
         compute_same_level_correlation_iteration(tree_graph, splitted_path)
 
+    def compute_files_that_should_be_in_commit(self, commit_hash):
+
+        similar_commits = {}
+        potential_nodes = set()
+
+        # Get list of files modified in commit
+        modified_files = []
+        modified_files_dict = {}
+        for commit in pydriller.RepositoryMining(self.repo_folder, single=commit_hash).traverse_commits():
+            for modification in commit.modifications:
+                modified_files.append(modification.new_path)
+                modified_files_dict[modification.new_path] = 1
+
+        # Compute each commit similarity score
+        for commit in pydriller.RepositoryMining(self.repo_folder).traverse_commits():
+            if commit.hash != commit_hash:
+                modified_files_other_commit = []
+                new_nodes = []
+                similar_nodes = 0
+                for modification in commit.modifications:
+                    if modification.new_path in modified_files_dict:
+                        similar_nodes += 1
+                    else:
+                        new_nodes.append(modification.new_path)
+                    modified_files_other_commit.append(modification.new_path)
+                similarity = similar_nodes / max(len(modified_files), len(modified_files_other_commit))
+                if similarity > 0.3:
+                    similar_commits[commit.hash] = (similarity, new_nodes)
+                    for node in new_nodes:
+                        if node not in potential_nodes:
+                            potential_nodes.add(node)
+
+        # Compute score of new potential nodes
+        for node in potential_nodes:
+            node_score = 0
+            for _, (similarity, nodes) in similar_commits.items():
+                if node in nodes:
+                    node_score += similarity
+            node_score /= len(similar_commits)
+            modified_files_dict[node] = node_score
+
+        for node in self.repo_files_path:
+            if node not in modified_files_dict:
+                modified_files_dict[node] = 0
+
+        return modified_files_dict
 
 
 if __name__ == "__main__":
     
+    #url = "https://github.com/apache/spark.git"
     url = "https://github.com/ishepard/pydriller.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
-
-
-    
-    
     
     print("Running analysis")
-    #ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
+    # ca.save_graph(ca.commit_graph, './commit_graph_bootstrap.bz2')
     print('\n\n')
-    #ca.save_graph(ca.commit_graph_lines, './commit_graph_lines.bz2')
-    ca.load_commit_graph_lines('./commit_graph_lines.bz2')
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
+    # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_bootstrap.bz2')
+    #ca.load_commit_graph_lines('./commit_graph_lines.bz2')
     ca.load_commit_graph('./commit_graph.bz2')
-    ca.compute_correlation_reverse('pydriller\\git_repository.py', ca.commit_graph, 0.5)
+    modified_files = ca.compute_files_that_should_be_in_commit('8bb69a3d2c114da184d7896fe1ec2064a543f1a3')
+    print(modified_files)
+    
+    #ca.compute_correlation_reverse('core\\src\\main\\java\\org\\apache\\spark\\JobExecutionStatus.java', ca.commit_graph, 0.5)
     
     print('\n\n')
     #ca.find_lines_related_to_lines(94, 101, 'pydriller/git_repository.py')
@@ -556,6 +601,7 @@ if __name__ == "__main__":
     # ca.compute_same_level_correlation('pydriller')
     
     #print("Drawing results")
-    # drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    drawer.draw_commit_missing_files_bokeh(modified_files)
     # drawer.draw_bokeh()
     

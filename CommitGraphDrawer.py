@@ -7,8 +7,10 @@ from bokeh.io import output_file, show
 from bokeh.models import (BoxZoomTool, Circle, HoverTool, TapTool, BoxSelectTool,
                           MultiLine, Plot, Range1d, ResetTool, GraphRenderer, StaticLayoutProvider,
                           EdgesAndLinkedNodes, NodesAndLinkedEdges, WheelZoomTool, PanTool)
-from bokeh.palettes import Spectral4
+from bokeh.palettes import Spectral4, magma, turbo
 from bokeh.plotting import from_networkx, figure
+from bokeh.colors.groups import black
+from bokeh.transform import linear_cmap
 
 import compute_layout
 
@@ -78,6 +80,50 @@ class CommitGraphDrawer:
         graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
 
         graph_renderer.selection_policy = NodesAndLinkedEdges()
+
+        plot.renderers.append(graph_renderer)
+
+        output_file("interactive_graphs.html")
+        show(plot)
+
+    def draw_commit_missing_files_bokeh(self, files_scores):
+
+        def translate(value, leftMin, leftMax, rightMin, rightMax):
+            # Figure out how 'wide' each range is
+            leftSpan = leftMax - leftMin
+            rightSpan = rightMax - rightMin
+
+            # Convert the left range into a 0-1 range (float)
+            valueScaled = float(value - leftMin) / float(leftSpan)
+
+            # Convert the 0-1 range into a value in the right range.
+            return rightMin + (valueScaled * rightSpan)
+
+        plot = Plot(sizing_mode="scale_height", x_range=Range1d(-1.5,1.5), y_range=Range1d(-1.5,1.5))
+        plot.add_tools(HoverTool(tooltips=[("index", "@index")]), TapTool(), WheelZoomTool(), ResetTool(), PanTool())
+
+        graph_renderer = from_networkx(self.graph, nx.spring_layout, scale=1, center=(0,0), k=1)
+
+        graph_renderer.node_renderer.glyph = Circle(size=15, fill_color='fill_color')
+        graph_renderer.node_renderer.selection_glyph = Circle(size=15, fill_color=Spectral4[2])
+        graph_renderer.node_renderer.hover_glyph = Circle(size=15, fill_color=Spectral4[1])
+
+        graph_renderer.edge_renderer.glyph = MultiLine(line_color="#CCCCCC", line_alpha=0.8, line_width=1)
+        graph_renderer.edge_renderer.selection_glyph = MultiLine(line_color=Spectral4[2], line_width=5)
+        graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
+
+        graph_renderer.selection_policy = NodesAndLinkedEdges()
+
+        color = []
+        score = []
+        for node in graph_renderer.node_renderer.data_source.data['index']:
+                if files_scores[node] == 0:
+                    color.append("#ffffff")
+                elif files_scores[node] == 1:
+                    color.append("#ff0000")
+                else:
+                    color.append(turbo(256)[int(files_scores[node]*256)])
+        graph_renderer.node_renderer.data_source.data['fill_color'] = color
 
         plot.renderers.append(graph_renderer)
 
