@@ -3,3 +3,6 @@ pydriller
 networkx
 matplotlib
 tqdm
+pandas
+kmodes
+bokeh

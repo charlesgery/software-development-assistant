@@ -8,6 +8,9 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import tqdm
 import zipfile
+import pickle
+import pandas as pd
+import hdbscan
 
 
 import TreeGraph
@@ -537,7 +540,8 @@ class CommitAnalyzer:
                 modified_files_dict[modification.new_path] = 1
 
         # Compute each commit similarity score
-        for commit in pydriller.RepositoryMining(self.repo_folder).traverse_commits():
+        print('Computing similarity score')
+        for commit in tqdm.tqdm(pydriller.RepositoryMining(self.repo_folder).traverse_commits()):
             if commit.hash != commit_hash:
                 modified_files_other_commit = []
                 new_nodes = []
@@ -556,7 +560,8 @@ class CommitAnalyzer:
                             potential_nodes.add(node)
 
         # Compute score of new potential nodes
-        for node in potential_nodes:
+        print('Compute node scores')
+        for node in tqdm.tqdm(potential_nodes):
             node_score = 0
             for _, (similarity, nodes) in similar_commits.items():
                 if node in nodes:
@@ -570,25 +575,97 @@ class CommitAnalyzer:
 
         return modified_files_dict
 
+    def create_commits_dataframe(self):
+
+        files_commits = {}
+        current_length = 0
+        columns = []
+
+        pbar = tqdm.tqdm(total=self.total_commits)
+        for commit in self.repository_mining.traverse_commits():
+
+            current_length += 1
+            columns.append(commit.hash)
+
+            for modification in commit.modifications:
+
+                if modification.new_path in files_commits:
+
+                    while len(files_commits[modification.new_path]) < current_length - 1:
+                        files_commits[modification.new_path].append(0)
+                    files_commits[modification.new_path].append(1)
+                
+                else:
+                    files_commits[modification.new_path] = [0 for _ in range(current_length-1)]
+                    files_commits[modification.new_path].append(1)
+            pbar.update(1)
+        pbar.close()
+
+        dataframe_list = []
+        index = []
+        for key, value in files_commits.items():
+
+            if len(value) < current_length:
+
+                while len(files_commits[key]) < current_length:
+                        files_commits[key].append(0)
+
+            index.append(key)
+            dataframe_list.append(value)
+
+        return pd.DataFrame(dataframe_list, index=index, columns=columns)
+
+    def cluster_dataframe(self, df):
+
+        clusterer = hdbscan.HDBSCAN()
+        clusterer.fit(df)
+        print(clusterer.labels_)
+
+                    
+
+
+
+
 
 if __name__ == "__main__":
     
-    #url = "https://github.com/apache/spark.git"
+    # url = "https://github.com/apache/spark.git"
     url = "https://github.com/ishepard/pydriller.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
     
     print("Running analysis")
+    df = ca.create_commits_dataframe()
+    print(df)
+    ca.cluster_dataframe(df)
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
     # ca.save_graph(ca.commit_graph, './commit_graph_bootstrap.bz2')
     print('\n\n')
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
     # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_bootstrap.bz2')
-    #ca.load_commit_graph_lines('./commit_graph_lines.bz2')
-    ca.load_commit_graph('./commit_graph.bz2')
-    modified_files = ca.compute_files_that_should_be_in_commit('8bb69a3d2c114da184d7896fe1ec2064a543f1a3')
+    # ca.load_commit_graph_lines('./commit_graph_lines.bz2')
+    # ca.load_commit_graph('./commit_graph_bootstrap.bz2')
+    # modified_files = ca.compute_files_that_should_be_in_commit('4d2b559d92425aef73aafa47bb20c395c0cc35fd')
+
+    '''
+    with open('modified_files_spark.pickle', 'wb') as handle:
+        pickle.dump(modified_files, handle)
+
+    
+    with open('modified_files_spark.pickle', 'rb') as handle:
+        modified_files = pickle.load(handle)
+    
     print(modified_files)
+
+    related_nodes = []
+    for (key, value) in modified_files.items():
+        if value > 0:
+            related_nodes.append((key, value))
+    
+    related_nodes.sort(key=lambda x: x[1], reverse=True)
+    print(related_nodes[:50])
+    '''
     
     #ca.compute_correlation_reverse('core\\src\\main\\java\\org\\apache\\spark\\JobExecutionStatus.java', ca.commit_graph, 0.5)
     
@@ -601,7 +678,7 @@ if __name__ == "__main__":
     # ca.compute_same_level_correlation('pydriller')
     
     #print("Drawing results")
-    drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
-    drawer.draw_commit_missing_files_bokeh(modified_files)
+    #drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    #drawer.draw_commit_missing_files_bokeh(modified_files)
     # drawer.draw_bokeh()
     
