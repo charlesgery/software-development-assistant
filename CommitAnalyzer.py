@@ -17,6 +17,7 @@ import TreeGraph
 import compute_layout
 import CommitGraphDrawer
 import CommitTreeGraphDrawer
+import Correlation
 
 class CommitAnalyzer:
 
@@ -453,7 +454,7 @@ class CommitAnalyzer:
 
 
     @staticmethod
-    def compute_correlation(node_name, commit_graph):
+    def compute_correlation(node_name, commit_graph, method='basic', alpha=0.5):
         """ Compute correlation between a file and another one in commit graph based on value of edge.
         Correlation = Value of edge / max value of edge for this node
         """
@@ -464,37 +465,20 @@ class CommitAnalyzer:
         for neighbor in commit_graph.neighbors(node_name):
 
             number_modifications_same_commit = commit_graph.edges[node_name, neighbor]["number_modifications_same_commit"]
+            number_modifications_neighbor = commit_graph.nodes[neighbor]["number_modifications"]
+
+            if method == 'basic':
+                correlation = Correlation.Correlation.basic_correlation(number_modifications_same_commit, number_modifications)
+
+            elif method == 'addition':
+
+                correlation = Correlation.Correlation.addition_correlation(number_modifications_same_commit, number_modifications, number_modifications_neighbor, alpha)
+            
+            elif method == 'multiplication':
+
+                correlation = Correlation.Correlation.multiplication_correlation(number_modifications_same_commit, number_modifications, number_modifications_neighbor, alpha)
+
             neighbors_correlation.append((neighbor, 100*number_modifications_same_commit/number_modifications, number_modifications_same_commit))
-        
-        neighbors_correlation.sort(key=lambda x: x[1], reverse=True)
-
-        print(f'Correlation of {node_name} (modified in {number_modifications} commits) with :')
-        for i, neighbor in enumerate(neighbors_correlation):
-            if i < 50:
-                print(f'{neighbor[0]} : {neighbor[1]}% (modified {neighbor[2]} times)')
-            else:
-                break
-
-    @staticmethod
-    def compute_correlation_reverse(node_name, commit_graph, alpha):
-        """ Compute correlation between a file and another one in commit graph based on value of edge.
-        Correlation = Value of edge / max value of edge for this node
-        """
-
-        number_modifications = commit_graph.nodes[node_name]["number_modifications"]
-        neighbors_correlation = []
-
-        for neighbor in commit_graph.neighbors(node_name):
-
-            number_modifications_same_commit = commit_graph.edges[node_name, neighbor]["number_modifications_same_commit"]
-
-            number_modifications_reverse = commit_graph.nodes[neighbor]["number_modifications"]
-            number_modifications_same_commit_reverse = commit_graph.edges[neighbor, node_name]["number_modifications_same_commit"]
-
-            node1_correlation = number_modifications_same_commit / number_modifications
-            node2_correlation = number_modifications_same_commit_reverse / number_modifications_reverse
-            correlation = 100 * ((1 + alpha) * node1_correlation - alpha * node2_correlation) / (1 + alpha)
-            neighbors_correlation.append((neighbor, correlation, number_modifications_same_commit))
         
         neighbors_correlation.sort(key=lambda x: x[1], reverse=True)
 
@@ -588,16 +572,19 @@ class CommitAnalyzer:
             columns.append(commit.hash)
 
             for modification in commit.modifications:
-
-                if modification.new_path in files_commits:
-
-                    while len(files_commits[modification.new_path]) < current_length - 1:
-                        files_commits[modification.new_path].append(0)
-                    files_commits[modification.new_path].append(1)
                 
-                else:
-                    files_commits[modification.new_path] = [0 for _ in range(current_length-1)]
-                    files_commits[modification.new_path].append(1)
+                if modification.new_path in self.repo_files_path:
+
+                    if modification.new_path in files_commits:
+
+                        while len(files_commits[modification.new_path]) < current_length - 1:
+                            files_commits[modification.new_path].append(0)
+                        files_commits[modification.new_path].append(1)
+                    
+                    else:
+                        files_commits[modification.new_path] = [0 for _ in range(current_length-1)]
+                        files_commits[modification.new_path].append(1)
+
             pbar.update(1)
         pbar.close()
 
@@ -617,9 +604,24 @@ class CommitAnalyzer:
 
     def cluster_dataframe(self, df):
 
-        clusterer = hdbscan.HDBSCAN()
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=2)
         clusterer.fit(df)
-        print(clusterer.labels_)
+
+        filenames = df.index.tolist()
+        clusters = {}
+
+        for (filename, cluster) in zip(filenames, clusterer.labels_):
+
+            if filename in self.repo_files_path:
+
+                if cluster in clusters:
+                    clusters[cluster].append(filename)
+                else:
+                    clusters[cluster] = [filename]
+
+        for key, value in clusters.items():
+
+            print(f'Cluster {key} : {value}')
 
                     
 
@@ -630,31 +632,38 @@ class CommitAnalyzer:
 if __name__ == "__main__":
     
     # url = "https://github.com/apache/spark.git"
-    url = "https://github.com/ishepard/pydriller.git"
+    # url = "https://github.com/ishepard/pydriller.git"
+    url = "https://github.com/oilshell/oil.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
     
     print("Running analysis")
-    df = ca.create_commits_dataframe()
-    print(df)
-    ca.cluster_dataframe(df)
-    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
-    # ca.save_graph(ca.commit_graph, './commit_graph_bootstrap.bz2')
-    print('\n\n')
-    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
-    # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_bootstrap.bz2')
-    # ca.load_commit_graph_lines('./commit_graph_lines.bz2')
-    # ca.load_commit_graph('./commit_graph_bootstrap.bz2')
-    # modified_files = ca.compute_files_that_should_be_in_commit('4d2b559d92425aef73aafa47bb20c395c0cc35fd')
 
-    '''
-    with open('modified_files_spark.pickle', 'wb') as handle:
+
+    print("Clustering analysis")
+    # df = ca.create_commits_dataframe()
+    # ca.cluster_dataframe(df)
+    
+
+    print("Correlation analysis")
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
+    # ca.save_graph(ca.commit_graph, './commit_graph_oil.bz2')
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
+    # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_oil.bz2')
+    # ca.load_commit_graph_lines('./commit_graph_lines_specter.bz2')
+    ca.load_commit_graph('./commit_graph_oil.bz2')
+
+    print("Commit analysis")
+    modified_files = ca.compute_files_that_should_be_in_commit('225a29a2b904427f955756f67db6c5d572edcddc')
+
+    
+    with open('modified_files_oil.pickle', 'wb') as handle:
         pickle.dump(modified_files, handle)
 
     
-    with open('modified_files_spark.pickle', 'rb') as handle:
-        modified_files = pickle.load(handle)
+    # with open('modified_files_spark.pickle', 'rb') as handle:
+    #    modified_files = pickle.load(handle)
     
     print(modified_files)
 
@@ -665,20 +674,22 @@ if __name__ == "__main__":
     
     related_nodes.sort(key=lambda x: x[1], reverse=True)
     print(related_nodes[:50])
-    '''
     
-    #ca.compute_correlation_reverse('core\\src\\main\\java\\org\\apache\\spark\\JobExecutionStatus.java', ca.commit_graph, 0.5)
+
+    print("Reverse correlation")
+    # ca.compute_correlation_reverse('core\\pyos.py', ca.commit_graph, 0.5)
     
-    print('\n\n')
-    #ca.find_lines_related_to_lines(94, 101, 'pydriller/git_repository.py')
-    print('\n\n')
+    print("Line correlation")
+    # ca.find_lines_related_to_lines(12, 20, 'src/clj/com/rpl/specter/transients.cljc')
+
+    print('Function correlation')
     # ca.find_lines_related_to_function('get_head', 'pydriller/git_repository.py')
     
-    # print("\n\n")
+    print("Same level correlation")
     # ca.compute_same_level_correlation('pydriller')
     
-    #print("Drawing results")
-    #drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
-    #drawer.draw_commit_missing_files_bokeh(modified_files)
+    print("Drawing results")
+    # drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    # drawer.draw_commit_missing_files_bokeh(modified_files)
     # drawer.draw_bokeh()
     
