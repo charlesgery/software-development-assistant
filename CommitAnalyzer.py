@@ -11,6 +11,10 @@ import zipfile
 import pickle
 import pandas as pd
 import hdbscan
+import concurrent.futures
+import threading
+import time
+import subprocess
 
 
 import TreeGraph
@@ -50,6 +54,8 @@ class CommitAnalyzer:
             self.repo_folder = self._clone_remote_repository(self._clone_folder(), url)
         else:
             self.repo_folder = url
+
+        os.chdir(self.repo_folder)
 
         with open(self.repo_folder + '\\.gitattributes', 'a') as f:
             f.write('*.py   diff=python')
@@ -276,12 +282,15 @@ class CommitAnalyzer:
 
     def get_commits_that_modified_line(self, start_line, end_line, path):
 
-        history = self.git_repo2.git.log('-L', f'{start_line},{end_line}:{path}').split('\n')
-        modified_in_commits = []
+        # history = self.git_repo2.git.log('-L', f'{start_line},{end_line}:{path}').split('\n')
+        history = subprocess.run(['git', 'log', '-L', f'{start_line},{end_line}:{path}', '--format=\"%H\"', '-s'], capture_output=True, encoding='utf_8').stdout.split('\n')
+        modified_in_commits = [line for line in history if len(line) > 0]
 
+        '''
         for line in history:
             if line[0:6] == 'commit':
                 modified_in_commits.append(line[7:])
+        '''
         
         return modified_in_commits
 
@@ -331,7 +340,7 @@ class CommitAnalyzer:
             list_intervals.append(interval)
 
 
-    def analyze_correlation(self, treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=False):
+    def analyze_correlation(self, treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=False, concurrent=False):
         """ Find files/folders that are modified together (ie. in same commit).
         Update commit and TreeCommit graphs accordingly.
         """
@@ -360,7 +369,10 @@ class CommitAnalyzer:
 
         # Commit Graph lines
         if commit_lines_analysis:
-            self.analyze_correlation_commit_lines_graph()
+            if concurrent:
+                self.analyze_correlation_commit_lines_graph_concurent()
+            else:
+                self.analyze_correlation_commit_lines_graph()
 
     def analyze_correlation_commit_graph(self, modified_files, pairs_of_modified_files):
         """ Find files that are modified together (ie. in same commit).
@@ -434,6 +446,7 @@ class CommitAnalyzer:
                     else:
                         commit_to_lines[commit] = [f'{file_path}:{line}']
 
+
         # Building the graph
         print('\n\nBuilding the graph')
         for (commit, list_lines) in tqdm.tqdm(commit_to_lines.items()):
@@ -450,6 +463,84 @@ class CommitAnalyzer:
                         self.commit_graph_lines.edges[edge[0], edge[1]]['number_modifications_same_commit'] += 1
                     else:
                         self.commit_graph_lines.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
+
+
+    
+    def analyze_correlation_commit_lines_graph_concurent(self):
+
+        commit_to_lines = {}
+
+        # Print analyzing all the lines of the repo
+        print('Print analyzing all the lines of the repo')
+        file_lines = []
+
+        for file_path in tqdm.tqdm(self.repo_files_path):
+
+            print(file_path)
+            # Get path to file and count number of lines
+            complete_file_path = self.repo_folder + '\\' + file_path
+            if os.path.getsize(complete_file_path):
+                with open(complete_file_path, 'rb') as f:
+                    for i, _ in enumerate(f):
+                        pass
+                    linenumber = i + 1
+            else:
+                linenumber = 0
+
+            for i in range(1, linenumber):
+
+                file_lines.append((file_path, i))
+
+        line_to_commits = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100 ) as executor:
+            future_to_line = {executor.submit(self.analyze_line, file_line): file_line for file_line in file_lines}
+
+            pbar = tqdm.tqdm(total=len(file_lines))
+            for future in concurrent.futures.as_completed(future_to_line):
+                file_line = future_to_line[future]
+                try:
+                    modified_in_commits = future.result()
+                    line_to_commits[file_line] = modified_in_commits
+                except Exception as exc:
+                    print(f'Error during execution : {exc}')
+                pbar.update(1)
+            pbar.close()
+
+        for file_line, modified_in_commits in line_to_commits.items():
+
+            file_path, line = file_line
+            self.commit_graph_lines.add_node(f'{file_path}:{line}', number_modifications=len(modified_in_commits))
+
+            for commit in modified_in_commits:
+
+                if commit in commit_to_lines:
+                    commit_to_lines[commit].append(f'{file_path}:{line}')
+                else:
+                    commit_to_lines[commit] = [f'{file_path}:{line}']
+
+
+        # Building the graph
+        print('\n\nBuilding the graph')
+        for (_, list_lines) in tqdm.tqdm(commit_to_lines.items()):
+
+            pairs_of_modified_lines = []
+            for i in range(len(list_lines)):
+                for j in range(i+1, len(list_lines)):
+                    pairs_of_modified_lines.append((list_lines[i], list_lines[j]))
+
+            for edge in pairs_of_modified_lines:
+
+                if edge[0] in self.commit_graph_lines.nodes and edge[1] in self.commit_graph_lines.nodes:
+                    if self.commit_graph_lines.has_edge(edge[0], edge[1]):
+                        self.commit_graph_lines.edges[edge[0], edge[1]]['number_modifications_same_commit'] += 1
+                    else:
+                        self.commit_graph_lines.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
+
+    def analyze_line(self, file_line):
+
+        file_path, line = file_line
+
+        return self.get_commits_that_modified_line(line, line, file_path)
 
 
 
@@ -619,9 +710,27 @@ class CommitAnalyzer:
                 else:
                     clusters[cluster] = [filename]
 
+        return clusters
+
+    def count_clusters_common_commits(self, df, clusters):
+
         for key, value in clusters.items():
 
-            print(f'Cluster {key} : {value}')
+            number_common_commits = 0
+
+            for column in df:
+
+                number_common_files_commit = 0
+                for filename in value:
+
+                    if df.loc[filename, column] == 1:
+
+                        number_common_files_commit += 1
+
+                if number_common_files_commit == len(value):
+                    number_common_commits += 1
+
+            print(f'Cluster {key}, {number_common_commits} common commits : {value}')
 
                     
 
@@ -632,8 +741,8 @@ class CommitAnalyzer:
 if __name__ == "__main__":
     
     # url = "https://github.com/apache/spark.git"
-    # url = "https://github.com/ishepard/pydriller.git"
-    url = "https://github.com/oilshell/oil.git"
+    url = "https://github.com/ishepard/pydriller.git"
+    # url = "https://github.com/oilshell/oil.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
@@ -643,28 +752,35 @@ if __name__ == "__main__":
 
     print("Clustering analysis")
     # df = ca.create_commits_dataframe()
-    # ca.cluster_dataframe(df)
+    # clusters = ca.cluster_dataframe(df)
+    # ca.count_clusters_common_commits(df, clusters)
     
 
     print("Correlation analysis")
+    # print(ca.get_commits_that_modified_line(10, 10, 'pydriller\\git_repository.py'))
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
     # ca.save_graph(ca.commit_graph, './commit_graph_oil.bz2')
-    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True)
+    
+    start_time = time.time()
+    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
+    print(f'{time.time() - start_time} seconds elapsed')
+    
     # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_oil.bz2')
     # ca.load_commit_graph_lines('./commit_graph_lines_specter.bz2')
-    ca.load_commit_graph('./commit_graph_oil.bz2')
+    # ca.load_commit_graph('./commit_graph_oil.bz2')
 
     print("Commit analysis")
-    modified_files = ca.compute_files_that_should_be_in_commit('225a29a2b904427f955756f67db6c5d572edcddc')
+    #modified_files = ca.compute_files_that_should_be_in_commit('225a29a2b904427f955756f67db6c5d572edcddc')
 
     
-    with open('modified_files_oil.pickle', 'wb') as handle:
-        pickle.dump(modified_files, handle)
+    #with open('modified_files_oil.pickle', 'wb') as handle:
+    #    pickle.dump(modified_files, handle)
 
     
     # with open('modified_files_spark.pickle', 'rb') as handle:
     #    modified_files = pickle.load(handle)
     
+    '''
     print(modified_files)
 
     related_nodes = []
@@ -674,10 +790,11 @@ if __name__ == "__main__":
     
     related_nodes.sort(key=lambda x: x[1], reverse=True)
     print(related_nodes[:50])
+    '''
     
 
     print("Reverse correlation")
-    # ca.compute_correlation_reverse('core\\pyos.py', ca.commit_graph, 0.5)
+    # ca.compute_correlation('core\\executor.py:275', ca.commit_graph_lines, 0.5)
     
     print("Line correlation")
     # ca.find_lines_related_to_lines(12, 20, 'src/clj/com/rpl/specter/transients.cljc')
