@@ -15,7 +15,11 @@ import concurrent.futures
 import threading
 import time
 import subprocess
+import sklearn
+import prince
+import numpy as np
 
+from sklearn import cluster
 
 import TreeGraph
 import compute_layout
@@ -54,8 +58,6 @@ class CommitAnalyzer:
             self.repo_folder = self._clone_remote_repository(self._clone_folder(), url)
         else:
             self.repo_folder = url
-
-        os.chdir(self.repo_folder)
 
         with open(self.repo_folder + '\\.gitattributes', 'a') as f:
             f.write('*.py   diff=python')
@@ -468,6 +470,9 @@ class CommitAnalyzer:
     
     def analyze_correlation_commit_lines_graph_concurent(self):
 
+        cwd = os.getcwd()
+        os.chdir(self.repo_folder)
+
         commit_to_lines = {}
 
         # Print analyzing all the lines of the repo
@@ -476,7 +481,7 @@ class CommitAnalyzer:
 
         for file_path in tqdm.tqdm(self.repo_files_path):
 
-            print(file_path)
+            # print(file_path)
             # Get path to file and count number of lines
             complete_file_path = self.repo_folder + '\\' + file_path
             if os.path.getsize(complete_file_path):
@@ -536,6 +541,8 @@ class CommitAnalyzer:
                     else:
                         self.commit_graph_lines.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
 
+        os.chdir(cwd)
+
     def analyze_line(self, file_line):
 
         file_path, line = file_line
@@ -569,7 +576,7 @@ class CommitAnalyzer:
 
                 correlation = Correlation.Correlation.multiplication_correlation(number_modifications_same_commit, number_modifications, number_modifications_neighbor, alpha)
 
-            neighbors_correlation.append((neighbor, 100*number_modifications_same_commit/number_modifications, number_modifications_same_commit))
+            neighbors_correlation.append((neighbor, correlation, number_modifications_same_commit))
         
         neighbors_correlation.sort(key=lambda x: x[1], reverse=True)
 
@@ -693,10 +700,75 @@ class CommitAnalyzer:
 
         return pd.DataFrame(dataframe_list, index=index, columns=columns)
 
-    def cluster_dataframe(self, df):
+    def create_commits_dataframe2(self):
 
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=2)
-        clusterer.fit(df)
+        columns = ['num_commits', 
+                    #'average_num_files_in_commits',
+                    'number_of_neighbors',
+                    'average_num_modif_with_neighbors']
+        df = pd.DataFrame(columns=columns)
+
+        for filename in self.repo_files_path:
+
+            num_commits = self.commit_graph.nodes[filename]['number_modifications']
+            total_connections = 0
+            num_neighbors = 0
+            for neighbor in self.commit_graph[filename]:
+                num_neighbors += 1
+                total_connections += self.commit_graph.edges[filename, neighbor]['number_modifications_same_commit']
+            average_num_modif_with_neighbor = total_connections/num_neighbors if num_neighbors > 0 else 0
+            data = [num_commits, num_neighbors, average_num_modif_with_neighbor]
+
+            df.loc[filename] = data
+
+        return df
+
+       
+
+    def dimensionality_reduction(self, df, method='tSNE'):
+
+        if method == 'tSNE':
+            tsne = sklearn.manifold.TSNE(n_components=2, perplexity=5)
+            embedded_data = tsne.fit_transform(df)
+
+        elif method == 'MCA':
+        
+            df.replace({0: "False", 1: "True"}, inplace = True)
+            mca = prince.MCA(n_components=2)
+            embedded_data = mca.fit_transform(df)
+
+        elif method == 'NMDS':
+
+            nmds = sklearn.manifold.MDS(n_components=2, metric=False, max_iter=3000, eps=1e-12,
+                    dissimilarity="precomputed",
+                    n_init=1)
+            embedded_data = nmds.fit_transform(df)
+
+        df_embedded = pd.DataFrame(embedded_data, index=df.index)
+        return df_embedded
+
+    def get_distance_matrix(self, df):
+
+        dist = sklearn.neighbors.DistanceMetric.get_metric('jaccard')
+        distance_matrix = dist.pairwise(df.iloc[:,:].to_numpy())
+        print(f'Distance matrix : {distance_matrix}')
+        print(f'{len(distance_matrix)}, {len(distance_matrix[0])}')
+
+        distance_df = pd.DataFrame(distance_matrix, index=df.index, columns=df.index)
+
+        return distance_df
+
+    def cluster_dataframe(self, df, method='HDBSCAN'):
+
+        if method == 'HDBSCAN':
+
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=2, cluster_selection_epsilon=0.5)
+            clusterer.fit(df)
+        
+        elif method == 'OPTICS':
+
+            clusterer = sklearn.cluster.OPTICS(min_samples=2, metric='precomputed', n_jobs=4)
+            clusterer.fit(df)
 
         filenames = df.index.tolist()
         clusters = {}
@@ -710,7 +782,7 @@ class CommitAnalyzer:
                 else:
                     clusters[cluster] = [filename]
 
-        return clusters
+        return clusters, clusterer.labels_
 
     def count_clusters_common_commits(self, df, clusters):
 
@@ -730,8 +802,21 @@ class CommitAnalyzer:
                 if number_common_files_commit == len(value):
                     number_common_commits += 1
 
-            print(f'Cluster {key}, {number_common_commits} common commits : {value}')
+            print(f'Cluster {key}, {number_common_commits} common commits : {value}\n')
 
+    def display_df(self, df, clusters_labels):
+
+        X = df.iloc[:, 0]
+        Y = df.iloc[:, 1]
+
+        fig, ax = plt.subplots()
+        ax.scatter(X, Y, c=clusters_labels)
+
+        for i, txt in enumerate(clusters_labels):
+            ax.annotate(txt, (X[i], Y[i]))
+
+        # plt.scatter(X, Y, c=clusters_labels)
+        plt.show()
                     
 
 
@@ -750,24 +835,33 @@ if __name__ == "__main__":
     print("Running analysis")
 
 
-    print("Clustering analysis")
-    # df = ca.create_commits_dataframe()
-    # clusters = ca.cluster_dataframe(df)
-    # ca.count_clusters_common_commits(df, clusters)
     
 
     print("Correlation analysis")
     # print(ca.get_commits_that_modified_line(10, 10, 'pydriller\\git_repository.py'))
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
     # ca.save_graph(ca.commit_graph, './commit_graph_oil.bz2')
-    
-    start_time = time.time()
-    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
-    print(f'{time.time() - start_time} seconds elapsed')
-    
+    # start_time = time.time()
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
+    # print(f'{time.time() - start_time} seconds elapsed')
     # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_oil.bz2')
+    
     # ca.load_commit_graph_lines('./commit_graph_lines_specter.bz2')
-    # ca.load_commit_graph('./commit_graph_oil.bz2')
+    ca.load_commit_graph('./commit_graph.bz2')
+
+    print("Clustering analysis")
+    df = ca.create_commits_dataframe()
+    # df.to_csv('./df_oil.csv')
+    # df = pd.read_csv('./df_oil.csv', index_col=0)
+    print(df)
+    distance = ca.get_distance_matrix(df)
+    # distance.to_csv('./df_distance_oil.csv')
+    # distance = pd.read_csv('./df_distance_oil.csv', index_col=0)
+    print(distance)
+    # df_reduced = ca.dimensionality_reduction(distance, method='tSNE')
+    clusters, clusters_labels = ca.cluster_dataframe(distance, method='OPTICS')
+    # ca.display_df(df_reduced, clusters_labels)
+    ca.count_clusters_common_commits(df, clusters)
 
     print("Commit analysis")
     #modified_files = ca.compute_files_that_should_be_in_commit('225a29a2b904427f955756f67db6c5d572edcddc')
