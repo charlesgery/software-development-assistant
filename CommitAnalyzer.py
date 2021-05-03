@@ -51,6 +51,8 @@ class CommitAnalyzer:
             _tmp_dir : location of temp directory
         """
 
+        print('Creating Object')
+
         self.url = url
 
         # Clone repo if necessary
@@ -82,21 +84,48 @@ class CommitAnalyzer:
         # Create TreeGraph
         self.commit_tree_graph = TreeGraph.TreeGraph(self._get_repo_name_from_url(self.url), False)
 
+
         # Get list of files
+        self.forbidden_file_extensions = ['.zip', '.gif', '.png']
         repo_files_paths = self.git_repo.files()
         self.path_prefix = os.path.commonpath(repo_files_paths)
         self.repo_files_path = []
         for file_path in repo_files_paths:
             _, file_extension = os.path.splitext(file_path)
-            if file_extension not in ['.zip', '.gif', '.png']:
+            if file_extension not in self.forbidden_file_extensions:
                 file_path = file_path[len(self.path_prefix)+1:]
                 self.repo_files_path.append(file_path)
                 split_path = file_path.split('\\')
                 self.commit_tree_graph.add_children(split_path)
         self.commit_graph.add_nodes_from([(file_path, {'number_modifications': 0, 'index': file_path}) for file_path in self.repo_files_path])
+        
+        # Find earlier names and paths of these files
+        self.old_to_new_path = {}
+        pbar = tqdm.tqdm(total=self.total_commits)
+        for commit in self.repository_mining.traverse_commits():
+            for modification in commit.modifications:
+                if modification.old_path != modification.new_path and modification.old_path is not None:
+                    self.old_to_new_path[modification.old_path] = modification.new_path
+            pbar.update(1)
+        pbar.close()
+
+        print(self.old_to_new_path)
+        
+        
         # Remove temp folder at end of execution
         atexit.register(self._cleanup)
 
+    def retrieve_current_path(self, old_path):
+
+        path = old_path
+
+        while path is not None and path not in self.repo_files_path:
+            if path in self.old_to_new_path:
+                path = self.old_to_new_path[path]
+            else:
+                path = None
+
+        return path
     
     @staticmethod
     def _is_remote_repository(repo: str) -> bool:
@@ -189,10 +218,14 @@ class CommitAnalyzer:
             for modification in tqdm.tqdm(commit.modifications):
 
                 path = path.replace("/", "\\")
-                if modification.new_path in self.repo_files_path and not modification.new_path[-4:] == '.zip' and modification.new_path != path:
+                if modification.new_path in self.repo_files_path:
+                    current_path = modification.new_path
+                else:
+                    current_path = self.retrieve_current_path(modification.new_path)
+                if current_path is not None and not modification.new_path[-4:] not in self.forbidden_file_extensions and current_path != path:
 
                     # Get path to file to count number of lines
-                    filepath = self.repo_folder + '\\' + modification.new_path
+                    filepath = self.repo_folder + '\\' + current_path
                     if os.path.getsize(filepath):
                         with open(filepath) as f:
                             for i, _ in enumerate(f):
@@ -203,7 +236,7 @@ class CommitAnalyzer:
                     
                     # Split file in group of 10 lines and check of they are linked to the modified line
                     if linenumber > 0:
-                        self.get_related_lines_precise(related_lines, linenumber, modification.new_path, commit.hash, line_history)
+                        self.get_related_lines_precise(related_lines, linenumber, current_path, commit.hash, line_history)
 
         self.display_related_lines(related_lines, len(modified_in_commits))
       
@@ -351,7 +384,16 @@ class CommitAnalyzer:
             pbar = tqdm.tqdm(total=self.total_commits)
             for commit in self.repository_mining.traverse_commits():
 
-                modified_files =  [modification.new_path for modification in commit.modifications]
+                modified_files = []
+                for modification in commit.modifications:
+
+                    if modification.new_path in self.repo_files_path:
+                        current_path = modification.new_path
+                    else:
+                        current_path = self.retrieve_current_path(modification.new_path)
+
+                    if current_path is not None:
+                        modified_files.append(current_path)
 
                 pairs_of_modified_files = []
                 for i in range(len(modified_files)):
@@ -382,6 +424,7 @@ class CommitAnalyzer:
         """
 
         for modified_file in modified_files:
+
             if modified_file in self.commit_graph.nodes:
                 self.commit_graph.nodes[modified_file]['number_modifications'] += 1
 
@@ -399,7 +442,7 @@ class CommitAnalyzer:
         """
 
         for (node1, node2) in pairs_of_modified_files:
-
+            
             if node1 in self.repo_files_path and node2 in self.repo_files_path:
 
                 # Find common prefix
@@ -629,11 +672,17 @@ class CommitAnalyzer:
                 new_nodes = []
                 similar_nodes = 0
                 for modification in commit.modifications:
-                    if modification.new_path in modified_files_dict:
+
+                    if modification.new_path in self.repo_files_path:
+                        current_path = modification.new_path
+                    else:
+                        current_path = self.retrieve_current_path(modification.new_path)
+
+                    if current_path is not None and current_path in modified_files_dict:
                         similar_nodes += 1
                     else:
-                        new_nodes.append(modification.new_path)
-                    modified_files_other_commit.append(modification.new_path)
+                        new_nodes.append(current_path)
+                    modified_files_other_commit.append(current_path)
                 similarity = similar_nodes / max(len(modified_files), len(modified_files_other_commit))
                 if similarity > 0.3:
                     similar_commits[commit.hash] = (similarity, new_nodes)
@@ -670,18 +719,23 @@ class CommitAnalyzer:
             columns.append(commit.hash)
 
             for modification in commit.modifications:
-                
+
                 if modification.new_path in self.repo_files_path:
+                    current_path = modification.new_path
+                else:
+                    current_path = self.retrieve_current_path(modification.new_path)
+                
+                if current_path is not None:
 
-                    if modification.new_path in files_commits:
+                    if current_path in files_commits:
 
-                        while len(files_commits[modification.new_path]) < current_length - 1:
-                            files_commits[modification.new_path].append(0)
-                        files_commits[modification.new_path].append(1)
+                        while len(files_commits[current_path]) < current_length - 1:
+                            files_commits[current_path].append(0)
+                        files_commits[current_path].append(1)
                     
                     else:
-                        files_commits[modification.new_path] = [0 for _ in range(current_length-1)]
-                        files_commits[modification.new_path].append(1)
+                        files_commits[current_path] = [0 for _ in range(current_length-1)]
+                        files_commits[current_path].append(1)
 
             pbar.update(1)
         pbar.close()
@@ -835,12 +889,10 @@ if __name__ == "__main__":
     print("Running analysis")
 
 
-    
-
     print("Correlation analysis")
     # print(ca.get_commits_that_modified_line(10, 10, 'pydriller\\git_repository.py'))
-    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
-    # ca.save_graph(ca.commit_graph, './commit_graph_oil.bz2')
+    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
+    ca.save_graph(ca.commit_graph, './commit_graph.bz2')
     # start_time = time.time()
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
     # print(f'{time.time() - start_time} seconds elapsed')
