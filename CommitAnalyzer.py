@@ -200,13 +200,22 @@ class CommitAnalyzer:
         modified_in_commits = self.get_commits_that_modified_function(function_name, path)
         self.find_related_lines(path, modified_in_commits)
 
-    def find_lines_related_to_lines(self, start_line, end_line, path):
+    def find_lines_related_to_lines(self, start_line, end_line, path, concurrent=False):
         """ Find lines in other files that are related to line in a given file,
         based on commit history.
         """
+        cwd = os.getcwd()
+        os.chdir(self.repo_folder)
 
         modified_in_commits = self.get_commits_that_modified_line(start_line, end_line, path)
-        self.find_related_lines(path, modified_in_commits)
+        modified_in_commits = [commit[1:-1] for commit in modified_in_commits]
+
+        if concurrent:
+            self.find_related_lines_concurrent(path, modified_in_commits)
+        else:
+            self.find_related_lines(path, modified_in_commits)
+
+        os.chdir(cwd)
         
     def find_related_lines(self, path, modified_in_commits):
 
@@ -222,22 +231,81 @@ class CommitAnalyzer:
                     current_path = modification.new_path
                 else:
                     current_path = self.retrieve_current_path(modification.new_path)
-                if current_path is not None and not modification.new_path[-4:] not in self.forbidden_file_extensions and current_path != path:
+                if current_path is not None and modification.new_path[-4:] not in self.forbidden_file_extensions and current_path != path:
 
+                    print(modification.new_path)
                     # Get path to file to count number of lines
                     filepath = self.repo_folder + '\\' + current_path
                     if os.path.getsize(filepath):
-                        with open(filepath) as f:
+                        with open(filepath, 'rb') as f:
                             for i, _ in enumerate(f):
                                 pass
                             linenumber = i + 1
                     else:
                         linenumber = 0
-                    
                     # Split file in group of 10 lines and check of they are linked to the modified line
                     if linenumber > 0:
                         self.get_related_lines_precise(related_lines, linenumber, current_path, commit.hash, line_history)
 
+        print(related_lines)
+        self.display_related_lines(related_lines, len(modified_in_commits))
+
+    def find_related_lines_concurrent(self, path, modified_in_commits):
+
+        related_lines = {}
+        line_history = {}
+        related_files = {}
+
+        for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
+
+            for modification in commit.modifications:
+
+                path = path.replace("/", "\\")
+                if modification.new_path in self.repo_files_path:
+                    current_path = modification.new_path
+                else:
+                    current_path = self.retrieve_current_path(modification.new_path)
+                if current_path not in related_files:
+                    if current_path is not None and modification.new_path[-4:] not in self.forbidden_file_extensions and current_path != path:
+
+                        # Get path to file to count number of lines
+                        filepath = self.repo_folder + '\\' + current_path
+                        if os.path.getsize(filepath):
+                            with open(filepath, 'rb') as f:
+                                for i, _ in enumerate(f):
+                                    pass
+                                linenumber = i + 1
+                        else:
+                            linenumber = 0
+                        related_files[current_path] = linenumber
+
+        file_lines = []
+        for filepath, linenumber in related_files.items():
+            for line in range(1, linenumber+1):
+                file_lines.append((filepath, line))
+
+        
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+            future_to_line = {executor.submit(self.analyze_line, file_line): file_line for file_line in file_lines}
+
+            pbar = tqdm.tqdm(total=len(file_lines))
+            for future in concurrent.futures.as_completed(future_to_line):
+                file_line = future_to_line[future]
+                try:
+                    modified_in_commits_2 = future.result()
+                    modified_in_commits_2 = [commit[1:-1] for commit in modified_in_commits_2]
+                    if file_line[0] not in related_lines:
+                        related_lines[file_line[0]] = {file_line[1]:len(set(modified_in_commits_2).intersection(set(modified_in_commits)))}
+                    else:
+                        related_lines[file_line[0]][file_line[1]] = len(set(modified_in_commits_2).intersection(set(modified_in_commits)))
+                except Exception as exc:
+                    print(f'Error during execution : {exc}')
+                pbar.update(1)
+            pbar.close()
+
+
+        print(related_lines)
         self.display_related_lines(related_lines, len(modified_in_commits))
       
 
@@ -309,7 +377,7 @@ class CommitAnalyzer:
             file_correlation_string += f' {start}-{end}'
             print(file_correlation_string)
 
-        most_correlated_lines.sort(key=lambda x: x[2], reverse=True)
+        most_correlated_lines.sort(key=lambda x: (-x[2], x[1], x[0]), reverse=False)
         for (line, file_path, num_modifications_line, correlation) in most_correlated_lines:
             print(f'Line {line} of {file_path} is {correlation} correlated ({num_modifications_line} modifs)')
                     
@@ -320,7 +388,7 @@ class CommitAnalyzer:
         # history = self.git_repo2.git.log('-L', f'{start_line},{end_line}:{path}').split('\n')
         history = subprocess.run(['git', 'log', '-L', f'{start_line},{end_line}:{path}', '--format=\"%H\"', '-s'], capture_output=True, encoding='utf_8').stdout.split('\n')
         modified_in_commits = [line for line in history if len(line) > 0]
-
+    
         '''
         for line in history:
             if line[0:6] == 'commit':
@@ -375,7 +443,12 @@ class CommitAnalyzer:
             list_intervals.append(interval)
 
 
-    def analyze_correlation(self, treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=False, concurrent=False):
+    def analyze_correlation(self, 
+                        treecommit_analysis=False, 
+                        commit_analysis=False, 
+                        commit_lines_analysis=False, 
+                        concurrent=False,
+                        single_line=None):
         """ Find files/folders that are modified together (ie. in same commit).
         Update commit and TreeCommit graphs accordingly.
         """
@@ -414,7 +487,7 @@ class CommitAnalyzer:
         # Commit Graph lines
         if commit_lines_analysis:
             if concurrent:
-                self.analyze_correlation_commit_lines_graph_concurent()
+                self.analyze_correlation_commit_lines_graph_concurent(single_line=single_line)
             else:
                 self.analyze_correlation_commit_lines_graph()
 
@@ -509,9 +582,20 @@ class CommitAnalyzer:
                     else:
                         self.commit_graph_lines.add_edge(edge[0], edge[1], number_modifications_same_commit=1)
 
+    @staticmethod
+    def get_file_number_of_lines(file_path):
+        
+        if os.path.getsize(file_path):
+            with open(file_path, 'rb') as f:
+                for i, _ in enumerate(f):
+                    pass
+                linenumber = i + 1
+        else:
+            linenumber = 0
 
-    
-    def analyze_correlation_commit_lines_graph_concurent(self):
+        return linenumber
+
+    def analyze_correlation_commit_lines_graph_concurent(self, single_line=None):
 
         cwd = os.getcwd()
         os.chdir(self.repo_folder)
@@ -521,26 +605,47 @@ class CommitAnalyzer:
         # Print analyzing all the lines of the repo
         print('Print analyzing all the lines of the repo')
         file_lines = []
+        
 
-        for file_path in tqdm.tqdm(self.repo_files_path):
+        if single_line:
 
-            # print(file_path)
-            # Get path to file and count number of lines
-            complete_file_path = self.repo_folder + '\\' + file_path
-            if os.path.getsize(complete_file_path):
-                with open(complete_file_path, 'rb') as f:
-                    for i, _ in enumerate(f):
-                        pass
-                    linenumber = i + 1
-            else:
-                linenumber = 0
+            already_seen_files = set()
+            modified_in_commits = self.get_commits_that_modified_line(single_line[1], single_line[1], single_line[0])
+            modified_in_commits = [commit[1:-1] for commit in modified_in_commits]
+            for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
 
-            for i in range(1, linenumber):
+                for modification in commit.modifications:
 
-                file_lines.append((file_path, i))
+                    path = single_line[0].replace("/", "\\")
+                    if modification.new_path in self.repo_files_path:
+                        current_path = modification.new_path
+                    else:
+                        current_path = self.retrieve_current_path(modification.new_path)
+
+                    if current_path not in already_seen_files:
+                        if current_path is not None and modification.new_path[-4:] not in self.forbidden_file_extensions:
+
+                            # Get path to file to count number of lines
+                            filepath = self.repo_folder + '\\' + current_path
+                            linenumber = self.get_file_number_of_lines(filepath)
+                            already_seen_files.add(current_path)
+
+                            for i in range(1, linenumber):
+                                file_lines.append((current_path, i))
+
+        else:
+
+            for file_path in tqdm.tqdm(self.repo_files_path):
+
+                # Get path to file and count number of lines
+                complete_file_path = self.repo_folder + '\\' + file_path
+                linenumber = self.get_file_number_of_lines(complete_file_path)
+
+                for i in range(1, linenumber):
+                    file_lines.append((file_path, i))
 
         line_to_commits = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=100 ) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
             future_to_line = {executor.submit(self.analyze_line, file_line): file_line for file_line in file_lines}
 
             pbar = tqdm.tqdm(total=len(file_lines))
@@ -594,8 +699,7 @@ class CommitAnalyzer:
 
 
 
-    @staticmethod
-    def compute_correlation(node_name, commit_graph, method='basic', alpha=0.5):
+    def compute_correlation(self, node_name, commit_graph, method='basic', alpha=0.5):
         """ Compute correlation between a file and another one in commit graph based on value of edge.
         Correlation = Value of edge / max value of edge for this node
         """
@@ -621,14 +725,60 @@ class CommitAnalyzer:
 
             neighbors_correlation.append((neighbor, correlation, number_modifications_same_commit))
         
-        neighbors_correlation.sort(key=lambda x: x[1], reverse=True)
+
+        neighbors_correlation = self.parse_neighbors_correlation(neighbors_correlation)
 
         print(f'Correlation of {node_name} (modified in {number_modifications} commits) with :')
         for i, neighbor in enumerate(neighbors_correlation):
             if i < 50:
-                print(f'{neighbor[0]} : {neighbor[1]}% (modified {neighbor[2]} times)')
+                print(f'{neighbor[0]}:{neighbor[1]} : {neighbor[2]}% (modified {neighbor[3]} times)')
             else:
                 break
+
+
+    def parse_neighbors_correlation(self, neighbors_correlation):
+
+        correlation_intervals = {}
+
+        for neighbor, correlation, num_mod in neighbors_correlation:
+
+            filepath, line = neighbor.split(':')
+            line = int(line)
+
+            if filepath not in correlation_intervals:
+                correlation_intervals[filepath] = {(line, line):(correlation, num_mod)}
+            else:
+                merge_left, merge_right = False, False
+                for (a, b) in correlation_intervals[filepath].keys():
+                    if b == line - 1 and correlation_intervals[filepath][(a,b)][0] == correlation:
+                        merge_left = True
+                        merge_left_pair = (a, b)
+                    if a == line + 1 and correlation_intervals[filepath][(a,b)][0] == correlation:
+                        merge_right = True
+                        merge_right_pair = (a, b)
+                if merge_left and merge_right:
+                    correlation_intervals[filepath].pop(merge_left_pair)
+                    correlation_intervals[filepath].pop(merge_right_pair)
+                    correlation_intervals[filepath][(merge_left_pair[0], merge_right_pair[1])] = (correlation, num_mod)
+                elif merge_left:
+                    correlation_intervals[filepath].pop(merge_left_pair)
+                    correlation_intervals[filepath][(merge_left_pair[0], line)] = (correlation, num_mod)
+                elif merge_right:
+                    correlation_intervals[filepath].pop(merge_right_pair)
+                    correlation_intervals[filepath][(line, merge_right_pair[1])] = (correlation, num_mod)
+                else:
+                    correlation_intervals[filepath][(line, line)] = (correlation, num_mod)
+
+
+        neighbors_correlation_packed = []
+        for filepath, linedict in correlation_intervals.items():
+            for line_interval, data in linedict.items():
+                neighbors_correlation_packed.append((filepath, line_interval, data[0], data[1]))
+        
+        neighbors_correlation_packed.sort(key=lambda x: (-x[2], x[0], x[1][0]), reverse=False)
+
+        return neighbors_correlation_packed
+
 
 
     def compute_same_level_correlation(self, node_path):
@@ -754,6 +904,73 @@ class CommitAnalyzer:
 
         return pd.DataFrame(dataframe_list, index=index, columns=columns)
 
+
+    def create_commits_dataframe_lines(self):
+
+        files_commits = {}
+        current_length = 0
+        columns = []
+
+        pbar = tqdm.tqdm(total=self.total_commits)
+        for commit in self.repository_mining.traverse_commits():
+
+            columns.append(commit.hash)
+
+            pbar.update(1)
+        pbar.close()
+
+
+        dataframe_list = []
+        index = []
+
+
+        cwd = os.getcwd()
+        os.chdir(self.repo_folder)
+
+        commit_to_lines = {}
+
+        # Print analyzing all the lines of the repo
+        print('Print analyzing all the lines of the repo')
+        file_lines = []
+        
+
+        for file_path in tqdm.tqdm(self.repo_files_path):
+
+            # Get path to file and count number of lines
+            complete_file_path = self.repo_folder + '\\' + file_path
+            linenumber = self.get_file_number_of_lines(complete_file_path)
+
+            for i in range(1, linenumber):
+                file_lines.append((file_path, i))
+
+        line_to_commits = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+            future_to_line = {executor.submit(self.analyze_line, file_line): file_line for file_line in file_lines}
+
+            pbar = tqdm.tqdm(total=len(file_lines))
+            for future in concurrent.futures.as_completed(future_to_line):
+                file_line = future_to_line[future]
+                try:
+                    
+                    modified_in_commits = future.result()
+                    index.append(f'{file_line[0]}:{file_line[1]}')
+                    file_line_commits = []
+                    for commit in columns:
+                        if commit in modified_in_commits:
+                            file_line_commits.append(1)
+                        else:
+                            file_line_commits.append(0)
+                    dataframe_list.append(file_line_commits)
+                except Exception as exc:
+                    print(f'Error during execution : {exc}')
+                pbar.update(1)
+            pbar.close()
+
+
+        os.chdir(cwd)
+
+        return pd.DataFrame(dataframe_list, index=index, columns=columns)
+
     def create_commits_dataframe2(self):
 
         columns = ['num_commits', 
@@ -812,7 +1029,7 @@ class CommitAnalyzer:
 
         return distance_df
 
-    def cluster_dataframe(self, df, method='HDBSCAN'):
+    def cluster_dataframe(self, df, method='HDBSCAN', distance_matrix=True):
 
         if method == 'HDBSCAN':
 
@@ -821,13 +1038,18 @@ class CommitAnalyzer:
         
         elif method == 'OPTICS':
 
-            clusterer = sklearn.cluster.OPTICS(min_samples=2, metric='precomputed', n_jobs=4)
+            if distance_matrix:
+                clusterer = sklearn.cluster.OPTICS(min_samples=2, metric='precomputed', n_jobs=4)
+            else:
+                clusterer = sklearn.cluster.OPTICS(min_samples=2, n_jobs=4)
             clusterer.fit(df)
 
         filenames = df.index.tolist()
         clusters = {}
 
         for (filename, cluster) in zip(filenames, clusterer.labels_):
+
+            filename = filename.replace("/", "\\")
 
             if filename in self.repo_files_path:
 
@@ -872,7 +1094,12 @@ class CommitAnalyzer:
         # plt.scatter(X, Y, c=clusters_labels)
         plt.show()
                     
+    def print_commits(self):
 
+        for commit in self.repository_mining.traverse_commits():
+            print(f'Commit : {commit.hash}')
+            print(f'Parents : {commit.parents}')
+            
 
 
 
@@ -882,42 +1109,61 @@ if __name__ == "__main__":
     # url = "https://github.com/apache/spark.git"
     url = "https://github.com/ishepard/pydriller.git"
     # url = "https://github.com/oilshell/oil.git"
+    # url = "https://github.com/smontanari/code-forensics.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
+    # ca.print_commits()
+
     
     print("Running analysis")
 
-
+    
     print("Correlation analysis")
     # print(ca.get_commits_that_modified_line(10, 10, 'pydriller\\git_repository.py'))
-    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
-    ca.save_graph(ca.commit_graph, './commit_graph.bz2')
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
+    # ca.save_graph(ca.commit_graph, './commit_graph.bz2')
     # start_time = time.time()
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
     # print(f'{time.time() - start_time} seconds elapsed')
-    # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_oil.bz2')
+    # ca.save_graph(ca.commit_graph_lines, './commit_graph_lines_code_forensics.bz2')
     
-    # ca.load_commit_graph_lines('./commit_graph_lines_specter.bz2')
-    ca.load_commit_graph('./commit_graph.bz2')
+    # ca.load_commit_graph_lines('./commit_graph_lines.bz2')
+    # ca.load_commit_graph('./commit_graph.bz2')
 
+    '''
+    for node in ca.commit_graph_lines:
+        if ca.commit_graph_lines.nodes[node]["number_modifications"] > 5:
+            print(f'{node}, modifications : {ca.commit_graph_lines.nodes[node]["number_modifications"]}')
+    print('\n\n')
+    '''
+
+    
     print("Clustering analysis")
-    df = ca.create_commits_dataframe()
-    # df.to_csv('./df_oil.csv')
-    # df = pd.read_csv('./df_oil.csv', index_col=0)
+    # df = ca.create_commits_dataframe()
+    df = ca.create_commits_dataframe_lines()
+    df.to_csv('./df_lines.csv')
     print(df)
+    # df = pd.read_csv('./df_oil.csv', index_col=0)
     distance = ca.get_distance_matrix(df)
-    # distance.to_csv('./df_distance_oil.csv')
+    distance.to_csv('./df_distance_lines.csv')
     # distance = pd.read_csv('./df_distance_oil.csv', index_col=0)
-    print(distance)
-    # df_reduced = ca.dimensionality_reduction(distance, method='tSNE')
-    clusters, clusters_labels = ca.cluster_dataframe(distance, method='OPTICS')
-    # ca.display_df(df_reduced, clusters_labels)
+    # print(distance)
+
+    # data = pd.read_csv('./test.tsv_files_data.tsv', sep='\t', header=None)
+    # metadata = pd.read_csv('./test.tsv_files_meta.tsv', sep='\t', header=0, index_col=0)
+    # data.index = metadata.index
+    clusters, clusters_labels = ca.cluster_dataframe(distance, method='OPTICS', distance_matrix=True)
+    print(clusters)
     ca.count_clusters_common_commits(df, clusters)
+    
+
+    # df_reduced = ca.dimensionality_reduction(distance, method='tSNE')
+    # ca.display_df(df_reduced, clusters_labels)
 
     print("Commit analysis")
     #modified_files = ca.compute_files_that_should_be_in_commit('225a29a2b904427f955756f67db6c5d572edcddc')
-
+    '''
     
     #with open('modified_files_oil.pickle', 'wb') as handle:
     #    pickle.dump(modified_files, handle)
@@ -926,6 +1172,9 @@ if __name__ == "__main__":
     # with open('modified_files_spark.pickle', 'rb') as handle:
     #    modified_files = pickle.load(handle)
     
+    
+
+    '''
     '''
     print(modified_files)
 
@@ -938,12 +1187,24 @@ if __name__ == "__main__":
     print(related_nodes[:50])
     '''
     
+    '''
+    
 
     print("Reverse correlation")
-    # ca.compute_correlation('core\\executor.py:275', ca.commit_graph_lines, 0.5)
+    # ca.compute_correlation('pydriller\\repository_mining.py:208', ca.commit_graph_lines, alpha=0.5)
     
     print("Line correlation")
-    # ca.find_lines_related_to_lines(12, 20, 'src/clj/com/rpl/specter/transients.cljc')
+    '''
+    '''
+    ca.analyze_correlation(treecommit_analysis=False,
+                    commit_analysis=False,
+                    commit_lines_analysis=True,
+                    concurrent=True,
+                    single_line=('core/main_loop.py', 211))
+    ca.compute_correlation('core\\main_loop.py:211', ca.commit_graph_lines, alpha=0.5)
+    '''
+    
+    # ca.find_lines_related_to_lines(208, 208, 'pydriller/repository_mining.py', concurrent=True)
 
     print('Function correlation')
     # ca.find_lines_related_to_function('get_head', 'pydriller/git_repository.py')
