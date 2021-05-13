@@ -18,6 +18,7 @@ import subprocess
 import sklearn
 import prince
 import numpy as np
+import copy
 
 from sklearn import cluster
 
@@ -109,7 +110,7 @@ class CommitAnalyzer:
             pbar.update(1)
         pbar.close()
 
-        print(self.old_to_new_path)
+        # print(self.old_to_new_path)
         
         
         # Remove temp folder at end of execution
@@ -150,7 +151,7 @@ class CommitAnalyzer:
 
         self._tmp_dir = tempfile.TemporaryDirectory()
         clone_folder = self._tmp_dir.name
-        print(clone_folder)
+        # print(clone_folder)
 
         return clone_folder
 
@@ -730,7 +731,7 @@ class CommitAnalyzer:
 
         print(f'Correlation of {node_name} (modified in {number_modifications} commits) with :')
         for i, neighbor in enumerate(neighbors_correlation):
-            if i < 50:
+            if i < 200:
                 print(f'{neighbor[0]}:{neighbor[1]} : {neighbor[2]}% (modified {neighbor[3]} times)')
             else:
                 break
@@ -953,6 +954,7 @@ class CommitAnalyzer:
                 try:
                     
                     modified_in_commits = future.result()
+                    modified_in_commits = [commit[1:-1] for commit in modified_in_commits]
                     index.append(f'{file_line[0]}:{file_line[1]}')
                     file_line_commits = []
                     for commit in columns:
@@ -1029,7 +1031,7 @@ class CommitAnalyzer:
 
         return distance_df
 
-    def cluster_dataframe(self, df, method='HDBSCAN', distance_matrix=True):
+    def cluster_dataframe(self, df, method='HDBSCAN', distance_matrix=True, min_size=2, max_eps=None):
 
         if method == 'HDBSCAN':
 
@@ -1039,9 +1041,12 @@ class CommitAnalyzer:
         elif method == 'OPTICS':
 
             if distance_matrix:
-                clusterer = sklearn.cluster.OPTICS(min_samples=2, metric='precomputed', n_jobs=4)
+                if max_eps is not None:
+                    clusterer = sklearn.cluster.OPTICS(min_samples=min_size, metric='precomputed', n_jobs=4, max_eps=max_eps)
+                else:
+                    clusterer = sklearn.cluster.OPTICS(min_samples=min_size, metric='precomputed', n_jobs=4)
             else:
-                clusterer = sklearn.cluster.OPTICS(min_samples=2, n_jobs=4)
+                clusterer = sklearn.cluster.OPTICS(min_samples=min_size, n_jobs=4)
             clusterer.fit(df)
 
         filenames = df.index.tolist()
@@ -1051,16 +1056,16 @@ class CommitAnalyzer:
 
             filename = filename.replace("/", "\\")
 
-            if filename in self.repo_files_path:
-
-                if cluster in clusters:
-                    clusters[cluster].append(filename)
-                else:
-                    clusters[cluster] = [filename]
+            if cluster in clusters:
+                clusters[cluster].append(filename)
+            else:
+                clusters[cluster] = [filename]
 
         return clusters, clusterer.labels_
 
-    def count_clusters_common_commits(self, df, clusters):
+    def count_clusters_common_commits(self, df, clusters, lines=False):
+
+        clusters_extended = {}
 
         for key, value in clusters.items():
 
@@ -1078,14 +1083,20 @@ class CommitAnalyzer:
                 if number_common_files_commit == len(value):
                     number_common_commits += 1
 
-            print(f'Cluster {key}, {number_common_commits} common commits : {value}\n')
+            if lines:
+                value = self.parse_fileline(value)
+            
+            clusters_extended[key] = (number_common_commits, value)
+            # print(f'Cluster {key}, {number_common_commits} common commits : {value}\n')
+
+        return clusters_extended
 
     def display_df(self, df, clusters_labels):
 
         X = df.iloc[:, 0]
         Y = df.iloc[:, 1]
 
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
         ax.scatter(X, Y, c=clusters_labels)
 
         for i, txt in enumerate(clusters_labels):
@@ -1099,6 +1110,227 @@ class CommitAnalyzer:
         for commit in self.repository_mining.traverse_commits():
             print(f'Commit : {commit.hash}')
             print(f'Parents : {commit.parents}')
+
+    def analyze_clusters(self, clusters):
+
+        print('Starting cluster analysis')
+        cluster_to_files = {}
+        file_to_cluster = {}
+
+        for cluster_number, values in clusters.items():
+
+            parsed_values = self.parse_fileline(values)
+            cluster_to_files[cluster_number] = parsed_values
+
+            for file_line in values:
+
+                file_path, _ = file_line.split(":")
+                
+                if file_path not in file_to_cluster:
+                    file_to_cluster[file_path] = [cluster_number]
+                elif cluster_number not in file_to_cluster[file_path]:
+                    file_to_cluster[file_path].append(cluster_number)
+
+        '''
+        # print(f'Cluster to files : {cluster_to_files}\n\n')
+        print(f'File to clusters : {file_to_cluster}')
+
+        for key, value in cluster_to_files.items():
+            print(f'Cluster number {key} : {value}')
+        '''
+
+    def parse_fileline(self, files_lines):
+
+        beautiful_files_lines = {}
+
+        for file_line in files_lines:
+
+            file_path, line = file_line.split(":")
+
+            if file_path not in beautiful_files_lines:
+                beautiful_files_lines[file_path] = [int(line)]
+            else:
+                beautiful_files_lines[file_path].append(int(line))
+
+        for file_path, lines in beautiful_files_lines.items():
+
+            lines.sort()
+            joined_lines = []
+
+            start = lines[0]
+            end = lines[0]
+            for i in range(1, len(lines)):
+                if lines[i] == end + 1:
+                    end += 1
+                else:
+                    joined_lines.append((start, end))
+                    start = lines[i]
+                    end = lines[i]
+            joined_lines.append((start,end))
+            beautiful_files_lines[file_path] = joined_lines
+
+        return beautiful_files_lines
+
+
+    def rearchitecture_clusters(self, clusters_extended):
+
+        interesting_clusters = {}
+        pool_of_lines = {}
+
+        for cluster, value in clusters_extended.items():
+            if value[0] >= 2 and len(value[1]) >= 2:
+                print(f'Cluster {cluster}, num common mod {value[0]} : {value[1]}')
+                interesting_clusters[cluster] = value
+            else:
+                for file_path in value[1].keys():
+                    if file_path not in pool_of_lines:
+                        pool_of_lines[file_path] = []
+
+                    for line in value[1][file_path]:
+                        pool_of_lines[file_path].append(line)
+
+
+
+        print('\n\n')
+        print(clusters_extended[0][1])
+        
+        for cluster_number, (num_mod, files_lines) in interesting_clusters.items():
+
+            for file_path in files_lines.keys():
+                if file_path in pool_of_lines:
+                    for line in pool_of_lines[file_path]:
+                        interesting_clusters[cluster_number][1][file_path].append(line)
+                    
+                    lines_to_be_sorted = interesting_clusters[cluster_number][1][file_path]
+                    lines_to_be_sorted.sort(key=lambda x: x[0])
+
+                    joined_lines = []
+
+                    start = lines_to_be_sorted[0][0]
+                    end = lines_to_be_sorted[0][1]
+                    for i in range(1, len(lines_to_be_sorted)):
+                        if lines_to_be_sorted[i][0] == end + 1:
+                            end = lines_to_be_sorted[i][1]
+                        else:
+                            joined_lines.append((start, end))
+                            start = lines_to_be_sorted[i][0]
+                            end = lines_to_be_sorted[i][1]
+                    joined_lines.append((start,end))
+                    interesting_clusters[cluster_number][1][file_path] = joined_lines
+        
+        print('\n\nExtended clusters')
+        for cluster, value in interesting_clusters.items():
+            print(f'Cluster {cluster}, num common mod {value[0]} : {value[1]}')
+
+
+        print('\n\nMerging clusters\n\n')
+
+        initial_entropy = self.compute_entropy(self.commit_graph)
+        print(f'Initial entropy : {initial_entropy}\n\n')
+
+        for cluster, value in interesting_clusters.items():
+            print(f'Entropy gain of cluster {cluster} merge')
+            
+            nodes = list(value[1].keys())
+
+            new_node_name = nodes[0]
+            new_commit_graph = copy.deepcopy(self.commit_graph)
+            for i in range(1, len(nodes)):
+                new_commit_graph = self.merge_nodes(new_node_name, nodes[i], new_commit_graph)
+                new_node_name += f':{nodes[i]}'
+                
+            new_entropy = self.compute_entropy(new_commit_graph)
+            print(f'New entropy : {new_entropy}, gain : {new_entropy - initial_entropy}\n\n')
+
+
+    def compute_file_lines(self, filename):
+
+        filepath = self.repo_folder + '\\' + filename
+        if os.path.getsize(filepath):
+            with open(filepath, 'rb') as f:
+                for i, _ in enumerate(f):
+                    pass
+                lines = i + 1
+        else:
+            lines = 0
+
+        return lines
+
+    def compute_entropy(self, commit_graph):
+
+        # Entropy computation is not perfect
+        # * New size won't be the sum of old sizes exactly
+        # * We have to take into account the times when node1 and node2 were modified
+        # together with one of their neighbor
+
+        entropy = 0
+
+        for node in commit_graph.nodes:
+
+
+            # Compute number of lines
+            if node in self.repo_files_path:
+                lines = self.compute_file_lines(node)
+            else:
+                files = node.split(':')
+                lines = 0
+                for file in files:
+                    lines += self.compute_file_lines(file)
+
+            # Compute coupling with other nodes
+            coupling = 0
+            for neighbor in commit_graph.neighbors(node):
+                coupling += commit_graph.edges[node, neighbor]['number_modifications_same_commit']
+
+
+            entropy += lines * coupling
+
+        return entropy
+
+    
+    def merge_nodes(self, node1, node2, initial_commit_graph):
+
+        new_commit_graph = copy.deepcopy(initial_commit_graph)
+
+        # Etapes pour merger les nodes
+        # 1. Get list of out connections with a dict
+        # eg. {node3 : 5, node4 : 6}
+        # 2. Get list of in connections with a dict
+        # 3. Merge nodes
+
+        # 1 and 2
+
+        connections = {}
+
+        for neighbor in initial_commit_graph.adj[node1]:
+            if neighbor != node2:
+                if neighbor not in connections:
+                    connections[neighbor] = initial_commit_graph.edges[node1, neighbor]['number_modifications_same_commit']
+                else:
+                    connections[neighbor] += initial_commit_graph.edges[node1, neighbor]['number_modifications_same_commit']
+        
+        for neighbor in initial_commit_graph.adj[node2]:
+            if neighbor != node1:
+                if neighbor not in connections:
+                    connections[neighbor] = initial_commit_graph.edges[node2, neighbor]['number_modifications_same_commit']
+                else:
+                    connections[neighbor] += initial_commit_graph.edges[node2, neighbor]['number_modifications_same_commit']
+
+        new_commit_graph.remove_node(node1)
+        new_commit_graph.remove_node(node2)
+
+        new_node = f'{node1}:{node2}'
+        new_commit_graph.add_node(new_node)
+
+        for neighbor, num_mod in connections.items():
+            new_commit_graph.add_edge(new_node, neighbor)
+            new_commit_graph.edges[new_node, neighbor]['number_modifications_same_commit'] = num_mod
+
+        
+        return new_commit_graph
+
+
+
             
 
 
@@ -1110,6 +1342,7 @@ if __name__ == "__main__":
     url = "https://github.com/ishepard/pydriller.git"
     # url = "https://github.com/oilshell/oil.git"
     # url = "https://github.com/smontanari/code-forensics.git"
+    # url = "https://github.com/nvbn/thefuck.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
@@ -1121,7 +1354,7 @@ if __name__ == "__main__":
     
     print("Correlation analysis")
     # print(ca.get_commits_that_modified_line(10, 10, 'pydriller\\git_repository.py'))
-    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
+    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
     # ca.save_graph(ca.commit_graph, './commit_graph.bz2')
     # start_time = time.time()
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
@@ -1140,26 +1373,47 @@ if __name__ == "__main__":
 
     
     print("Clustering analysis")
+    
     # df = ca.create_commits_dataframe()
-    df = ca.create_commits_dataframe_lines()
-    df.to_csv('./df_lines.csv')
-    print(df)
-    # df = pd.read_csv('./df_oil.csv', index_col=0)
-    distance = ca.get_distance_matrix(df)
-    distance.to_csv('./df_distance_lines.csv')
-    # distance = pd.read_csv('./df_distance_oil.csv', index_col=0)
+    # df = ca.create_commits_dataframe_lines()
+    # df.to_csv('./df_lines.csv')
+    df = pd.read_csv('./df_lines.csv', index_col=0)
+    # distance = ca.get_distance_matrix(df)
+    # distance.to_csv('./df_distance_lines.csv')
+    distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
     # print(distance)
 
     # data = pd.read_csv('./test.tsv_files_data.tsv', sep='\t', header=None)
     # metadata = pd.read_csv('./test.tsv_files_meta.tsv', sep='\t', header=0, index_col=0)
     # data.index = metadata.index
-    clusters, clusters_labels = ca.cluster_dataframe(distance, method='OPTICS', distance_matrix=True)
-    print(clusters)
-    ca.count_clusters_common_commits(df, clusters)
+    
+    '''
+    clusters, clusters_labels = ca.cluster_dataframe(
+                distance,
+                method='OPTICS',
+                distance_matrix=True,
+                min_size=20,
+                max_eps=1)
+
+    with open("./clusters.txt", "wb") as fp:
+        pickle.dump(clusters, fp)
+    '''
     
 
-    # df_reduced = ca.dimensionality_reduction(distance, method='tSNE')
-    # ca.display_df(df_reduced, clusters_labels)
+    with open("./clusters.txt", "rb") as fp:
+        clusters = pickle.load(fp)
+    # print(clusters)
+    clusters_extended = ca.count_clusters_common_commits(df, clusters, lines=True)
+
+    ca.rearchitecture_clusters(clusters_extended)
+
+    ca.analyze_clusters(clusters)
+    
+
+    '''
+    df_reduced = ca.dimensionality_reduction(distance, method='tSNE')
+    ca.display_df(df_reduced, clusters_labels)
+    '''
 
     print("Commit analysis")
     #modified_files = ca.compute_files_that_should_be_in_commit('225a29a2b904427f955756f67db6c5d572edcddc')
@@ -1187,7 +1441,6 @@ if __name__ == "__main__":
     print(related_nodes[:50])
     '''
     
-    '''
     
 
     print("Reverse correlation")
@@ -1195,13 +1448,12 @@ if __name__ == "__main__":
     
     print("Line correlation")
     '''
-    '''
     ca.analyze_correlation(treecommit_analysis=False,
                     commit_analysis=False,
                     commit_lines_analysis=True,
                     concurrent=True,
-                    single_line=('core/main_loop.py', 211))
-    ca.compute_correlation('core\\main_loop.py:211', ca.commit_graph_lines, alpha=0.5)
+                    single_line=('tests/shells/test_generic.py', 18))
+    ca.compute_correlation('tests\\shells\\test_generic.py:18', ca.commit_graph_lines, alpha=0.5)
     '''
     
     # ca.find_lines_related_to_lines(208, 208, 'pydriller/repository_mining.py', concurrent=True)
