@@ -1172,7 +1172,7 @@ class CommitAnalyzer:
         return beautiful_files_lines
 
 
-    def rearchitecture_clusters(self, clusters_extended):
+    def rearchitecture_clusters(self, clusters_extended, df):
 
         interesting_clusters = {}
         pool_of_lines = {}
@@ -1235,8 +1235,10 @@ class CommitAnalyzer:
 
             new_node_name = nodes[0]
             new_commit_graph = copy.deepcopy(self.commit_graph)
+            new_df = copy.deepcopy(df)
+
             for i in range(1, len(nodes)):
-                new_commit_graph = self.merge_nodes(new_node_name, nodes[i], new_commit_graph)
+                new_commit_graph, new_df = self.merge_nodes(new_node_name, nodes[i], new_commit_graph, new_df)
                 new_node_name += f':{nodes[i]}'
                 
             new_entropy = self.compute_entropy(new_commit_graph)
@@ -1288,7 +1290,7 @@ class CommitAnalyzer:
         return entropy
 
     
-    def merge_nodes(self, node1, node2, initial_commit_graph):
+    def merge_nodes(self, node1, node2, initial_commit_graph, df):
 
         new_commit_graph = copy.deepcopy(initial_commit_graph)
 
@@ -1302,6 +1304,25 @@ class CommitAnalyzer:
 
         connections = {}
 
+        index = list(df.index)
+        new_node_row = []
+
+        for column in df.columns:
+            if df.at[node1, column] == 1 or df.at[node2, column] == 1:
+                new_node_row.append(1)
+                for neighbor in index:
+                    if df.at[neighbor, column] == 1 and neighbor not in [node1, node2]:
+                        if neighbor not in connections:
+                            connections[neighbor] = 1
+                        else:
+                            connections[neighbor] += 1
+            else:
+                new_node_row.append(0)
+
+        new_node_row = [new_node_row]
+
+
+        '''
         for neighbor in initial_commit_graph.adj[node1]:
             if neighbor != node2:
                 if neighbor not in connections:
@@ -1315,6 +1336,8 @@ class CommitAnalyzer:
                     connections[neighbor] = initial_commit_graph.edges[node2, neighbor]['number_modifications_same_commit']
                 else:
                     connections[neighbor] += initial_commit_graph.edges[node2, neighbor]['number_modifications_same_commit']
+        '''
+
 
         new_commit_graph.remove_node(node1)
         new_commit_graph.remove_node(node2)
@@ -1322,12 +1345,16 @@ class CommitAnalyzer:
         new_node = f'{node1}:{node2}'
         new_commit_graph.add_node(new_node)
 
+        new_row = pd.DataFrame(new_node_row, columns=list(df.columns), index=[new_node])
+        new_df = df.drop(labels=[node1, node2])
+        new_df = new_df.append(new_row)
+
         for neighbor, num_mod in connections.items():
             new_commit_graph.add_edge(new_node, neighbor)
             new_commit_graph.edges[new_node, neighbor]['number_modifications_same_commit'] = num_mod
 
         
-        return new_commit_graph
+        return new_commit_graph, new_df
 
 
 
@@ -1374,10 +1401,11 @@ if __name__ == "__main__":
     
     print("Clustering analysis")
     
-    # df = ca.create_commits_dataframe()
+    df = ca.create_commits_dataframe()
     # df = ca.create_commits_dataframe_lines()
     # df.to_csv('./df_lines.csv')
-    df = pd.read_csv('./df_lines.csv', index_col=0)
+    df_lines = pd.read_csv('./df_lines.csv', index_col=0)
+
     # distance = ca.get_distance_matrix(df)
     # distance.to_csv('./df_distance_lines.csv')
     distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
@@ -1403,9 +1431,9 @@ if __name__ == "__main__":
     with open("./clusters.txt", "rb") as fp:
         clusters = pickle.load(fp)
     # print(clusters)
-    clusters_extended = ca.count_clusters_common_commits(df, clusters, lines=True)
+    clusters_extended = ca.count_clusters_common_commits(df_lines, clusters, lines=True)
 
-    ca.rearchitecture_clusters(clusters_extended)
+    ca.rearchitecture_clusters(clusters_extended, df)
 
     ca.analyze_clusters(clusters)
     
