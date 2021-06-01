@@ -19,6 +19,7 @@ import sklearn
 import prince
 import numpy as np
 import copy
+import ast
 
 from sklearn import cluster
 
@@ -27,6 +28,7 @@ import compute_layout
 import CommitGraphDrawer
 import CommitTreeGraphDrawer
 import Correlation
+import ML_trainer
 
 class CommitAnalyzer:
 
@@ -39,8 +41,8 @@ class CommitAnalyzer:
         Attributes :
             url : url of the repo (either remote or local)
             repo_folder : folder where repo is stored (same as url if local repo)
-            repository_mining : RepositoryMining object to analyze the repo
-            git_repo : GitRepository object
+            repository_mining : Repository object to analyze the repo
+            git_repo : Git object
             git_repo2 : PyGit Repo object
             repo_files_path : list of paths to the files contained in the repo
             repo_files : list of files contained in the repo
@@ -65,11 +67,11 @@ class CommitAnalyzer:
         with open(self.repo_folder + '\\.gitattributes', 'a') as f:
             f.write('*.py   diff=python')
 
-        # Get a RepositoryMining object
-        self.repository_mining = pydriller.RepositoryMining(self.repo_folder)
+        # Get a Repository object
+        self.repository_mining = pydriller.Repository(self.repo_folder, num_workers=1)
 
-        # Get a GitRepository object
-        self.git_repo = pydriller.GitRepository(self.repo_folder)
+        # Get a Git object
+        self.git_repo = pydriller.Git(self.repo_folder)
         self.git_repo2 = git.Repo(self.repo_folder)
         self.total_commits = self.git_repo.total_commits()
 
@@ -104,7 +106,7 @@ class CommitAnalyzer:
         self.old_to_new_path = {}
         pbar = tqdm.tqdm(total=self.total_commits)
         for commit in self.repository_mining.traverse_commits():
-            for modification in commit.modifications:
+            for modification in commit.modified_files:
                 if modification.old_path != modification.new_path and modification.old_path is not None:
                     self.old_to_new_path[modification.old_path] = modification.new_path
             pbar.update(1)
@@ -223,9 +225,9 @@ class CommitAnalyzer:
         related_lines = {}
         line_history = {}
 
-        for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
+        for commit in pydriller.Repository(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
 
-            for modification in tqdm.tqdm(commit.modifications):
+            for modification in tqdm.tqdm(commit.modified_files):
 
                 path = path.replace("/", "\\")
                 if modification.new_path in self.repo_files_path:
@@ -257,9 +259,9 @@ class CommitAnalyzer:
         line_history = {}
         related_files = {}
 
-        for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
+        for commit in pydriller.Repository(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
 
-            for modification in commit.modifications:
+            for modification in commit.modified_files:
 
                 path = path.replace("/", "\\")
                 if modification.new_path in self.repo_files_path:
@@ -400,12 +402,9 @@ class CommitAnalyzer:
 
     def get_commits_that_modified_function(self, function_name, path):
 
-        history = self.git_repo2.git.log('-L', f':{function_name}:{path}').split('\n')
-        modified_in_commits = []
 
-        for line in history:
-            if line[0:6] == 'commit':
-                modified_in_commits.append(line[7:])
+        history = subprocess.run(['git', 'log', '-L', f':{function_name}:{path}', '--format=\"%H\"', '-s'], capture_output=True, encoding='utf_8').stdout.split('\n')
+        modified_in_commits = [line for line in history if len(line) > 0]
         
         return modified_in_commits
                     
@@ -459,7 +458,7 @@ class CommitAnalyzer:
             for commit in self.repository_mining.traverse_commits():
 
                 modified_files = []
-                for modification in commit.modifications:
+                for modification in commit.modified_files:
 
                     if modification.new_path in self.repo_files_path:
                         current_path = modification.new_path
@@ -613,9 +612,9 @@ class CommitAnalyzer:
             already_seen_files = set()
             modified_in_commits = self.get_commits_that_modified_line(single_line[1], single_line[1], single_line[0])
             modified_in_commits = [commit[1:-1] for commit in modified_in_commits]
-            for commit in pydriller.RepositoryMining(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
+            for commit in pydriller.Repository(self.repo_folder, only_commits=modified_in_commits).traverse_commits():
 
-                for modification in commit.modifications:
+                for modification in commit.modified_files:
 
                     path = single_line[0].replace("/", "\\")
                     if modification.new_path in self.repo_files_path:
@@ -697,6 +696,12 @@ class CommitAnalyzer:
         file_path, line = file_line
 
         return self.get_commits_that_modified_line(line, line, file_path)
+
+    def analyze_method(self, file_method):
+
+        file_path, method = file_method
+
+        return self.get_commits_that_modified_function(method, file_path)
 
 
 
@@ -810,19 +815,19 @@ class CommitAnalyzer:
         # Get list of files modified in commit
         modified_files = []
         modified_files_dict = {}
-        for commit in pydriller.RepositoryMining(self.repo_folder, single=commit_hash).traverse_commits():
-            for modification in commit.modifications:
+        for commit in pydriller.Repository(self.repo_folder, single=commit_hash).traverse_commits():
+            for modification in commit.modified_files:
                 modified_files.append(modification.new_path)
                 modified_files_dict[modification.new_path] = 1
 
         # Compute each commit similarity score
         print('Computing similarity score')
-        for commit in tqdm.tqdm(pydriller.RepositoryMining(self.repo_folder).traverse_commits()):
+        for commit in tqdm.tqdm(pydriller.Repository(self.repo_folder).traverse_commits()):
             if commit.hash != commit_hash:
                 modified_files_other_commit = []
                 new_nodes = []
                 similar_nodes = 0
-                for modification in commit.modifications:
+                for modification in commit.modified_files:
 
                     if modification.new_path in self.repo_files_path:
                         current_path = modification.new_path
@@ -869,7 +874,7 @@ class CommitAnalyzer:
             current_length += 1
             columns.append(commit.hash)
 
-            for modification in commit.modifications:
+            for modification in commit.modified_files:
 
                 if modification.new_path in self.repo_files_path:
                     current_path = modification.new_path
@@ -908,8 +913,6 @@ class CommitAnalyzer:
 
     def create_commits_dataframe_lines(self):
 
-        files_commits = {}
-        current_length = 0
         columns = []
 
         pbar = tqdm.tqdm(total=self.total_commits)
@@ -928,7 +931,6 @@ class CommitAnalyzer:
         cwd = os.getcwd()
         os.chdir(self.repo_folder)
 
-        commit_to_lines = {}
 
         # Print analyzing all the lines of the repo
         print('Print analyzing all the lines of the repo')
@@ -963,6 +965,93 @@ class CommitAnalyzer:
                         else:
                             file_line_commits.append(0)
                     dataframe_list.append(file_line_commits)
+                except Exception as exc:
+                    print(f'Error during execution : {exc}')
+                pbar.update(1)
+            pbar.close()
+
+
+        os.chdir(cwd)
+
+        return pd.DataFrame(dataframe_list, index=index, columns=columns)
+
+    def find_methods_in_python_file(self, file_path):
+
+        methods = []
+        o = open(file_path, "r", encoding='utf-8')
+        text = o.read()
+        p = ast.parse(text)
+        for node in ast.walk(p):
+            if isinstance(node, ast.FunctionDef):
+                methods.append(node.name)
+
+        print(methods)
+        return methods
+
+
+    def create_commits_dataframe_functions(self):
+
+        columns = []
+
+        pbar = tqdm.tqdm(total=self.total_commits)
+        for commit in self.repository_mining.traverse_commits():
+
+            columns.append(commit.hash)
+
+            pbar.update(1)
+        pbar.close()
+
+
+        dataframe_list = []
+        index = []
+
+
+        cwd = os.getcwd()
+        os.chdir(self.repo_folder)
+
+        with open('./gitattributes', 'a') as f:
+            f.write('*.py   diff=python\n')
+
+        print(os.listdir('./'))
+        
+
+        # Print analyzing all the lines of the repo
+        print('Print analyzing all the lines of the repo')
+        file_methods = []
+        
+
+        for file_path in tqdm.tqdm(self.repo_files_path):
+
+            if file_path[-3:] == '.py':
+
+                print(file_path)
+                # Get path to file and count number of lines
+                complete_file_path = self.repo_folder + '\\' + file_path
+                methods = self.find_methods_in_python_file(complete_file_path)
+
+                for method in methods:
+                    file_methods.append((file_path, method))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+            future_to_method = {executor.submit(self.analyze_method, file_method): file_method for file_method in file_methods}
+
+            pbar = tqdm.tqdm(total=len(file_methods))
+            for future in concurrent.futures.as_completed(future_to_method):
+                file_method = future_to_method[future]
+                try:
+                    
+                    modified_in_commits = future.result()
+                    modified_in_commits = [commit[1:-1] for commit in modified_in_commits]
+                    row_name = f'{file_method[0]}:{file_method[1]}'
+                    if row_name not in index:
+                        index.append(f'{file_method[0]}:{file_method[1]}')
+                        file_method_commits = []
+                        for commit in columns:
+                            if commit in modified_in_commits:
+                                file_method_commits.append(1)
+                            else:
+                                file_method_commits.append(0)
+                        dataframe_list.append(file_method_commits)
                 except Exception as exc:
                     print(f'Error during execution : {exc}')
                 pbar.update(1)
@@ -1365,17 +1454,21 @@ class CommitAnalyzer:
 
 if __name__ == "__main__":
     
+
     # url = "https://github.com/apache/spark.git"
-    url = "https://github.com/ishepard/pydriller.git"
+    # url = "https://github.com/ishepard/pydriller.git"
     # url = "https://github.com/oilshell/oil.git"
     # url = "https://github.com/smontanari/code-forensics.git"
     # url = "https://github.com/nvbn/thefuck.git"
+    url = "https://github.com/pallets/flask.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
     # ca.print_commits()
 
     
+    print(ca.analyze_method(('./CommitAnalyzer.py', 'merge_nodes')))
+
     print("Running analysis")
 
     
@@ -1398,44 +1491,68 @@ if __name__ == "__main__":
     print('\n\n')
     '''
 
+    print("ML analysis")
+
+    """
+    ml_analyzer = ML_trainer.ML_trainer(ca.commit_graph)
+    ml_analyzer.fit()
+    """
     
     print("Clustering analysis")
     
+    
     df = ca.create_commits_dataframe()
-    # df = ca.create_commits_dataframe_lines()
-    # df.to_csv('./df_lines.csv')
-    df_lines = pd.read_csv('./df_lines.csv', index_col=0)
+    df.to_csv('./df_flask.csv')
+    # df = pd.read_csv('./df_flask', index_col=0)
 
-    # distance = ca.get_distance_matrix(df)
-    # distance.to_csv('./df_distance_lines.csv')
-    distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
+    # df_lines = ca.create_commits_dataframe_lines()
+    # df_lines.to_csv('./df_lines_flask.csv')
+    # df_lines = pd.read_csv('./df_lines.csv', index_col=0)
+
+    df_methods = ca.create_commits_dataframe_functions()
+    df_methods.to_csv('./df_methods_flask.csv')
+    #df_methods = pd.read_csv('./df_methods_flask.csv', index_col=0)
+
+    print(df_methods)
+
+    distance = ca.get_distance_matrix(df_methods)
+    distance.to_csv('./df_distance_methods_flask.csv')
+    # distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
     # print(distance)
 
     # data = pd.read_csv('./test.tsv_files_data.tsv', sep='\t', header=None)
     # metadata = pd.read_csv('./test.tsv_files_meta.tsv', sep='\t', header=0, index_col=0)
     # data.index = metadata.index
     
-    '''
+    
+    
     clusters, clusters_labels = ca.cluster_dataframe(
                 distance,
                 method='OPTICS',
                 distance_matrix=True,
-                min_size=20,
+                min_size=3,
                 max_eps=1)
 
-    with open("./clusters.txt", "wb") as fp:
+    with open("./clusters_flask_methods.txt", "wb") as fp:
         pickle.dump(clusters, fp)
-    '''
     
-
+    
+    '''
     with open("./clusters.txt", "rb") as fp:
         clusters = pickle.load(fp)
     # print(clusters)
-    clusters_extended = ca.count_clusters_common_commits(df_lines, clusters, lines=True)
+    '''
+
+    clusters_extended = ca.count_clusters_common_commits(df_methods, clusters, lines=False)
+    print(clusters_extended)
+
+    for key, value in clusters_extended.items():
+         print(f'Cluster {key}, num common mod {value[0]} : {value[1]}')
 
     ca.rearchitecture_clusters(clusters_extended, df)
 
     ca.analyze_clusters(clusters)
+    
     
 
     '''
@@ -1493,7 +1610,7 @@ if __name__ == "__main__":
     # ca.compute_same_level_correlation('pydriller')
     
     print("Drawing results")
-    # drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
+    drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
     # drawer.draw_commit_missing_files_bokeh(modified_files)
-    # drawer.draw_bokeh()
+    drawer.draw_bokeh()
     

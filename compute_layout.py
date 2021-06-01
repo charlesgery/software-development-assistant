@@ -225,7 +225,7 @@ def _fruchterman_reingold(adjacency, node_positions, origin, scale, temperature,
     distance -= node_radii[None, :] + node_radii[:, None]
 
     # prevent distances from becoming less than zero due to overlap of nodes
-    distance[distance <= 0.] = 1e-6 # 1e-13 is numerical accuracy, and we will be taking the square shortly
+    distance[distance <= 0.] = 1e-10 # 1e-13 is numerical accuracy, and we will be taking the square shortly
 
     with np.errstate(divide='ignore', invalid='ignore'):
         direction = delta / distance[..., None] # i.e. the unit vector
