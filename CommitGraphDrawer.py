@@ -62,14 +62,17 @@ class CommitGraphDrawer:
         nt.show_buttons(filter_=['physics'])
         nt.show('nx.html')
 
-    def draw_bokeh(self):
+    def draw_bokeh(self, layout=None):
         """ Draw commit graph using Bokeh.
         """
 
         plot = Plot(sizing_mode="scale_height", x_range=Range1d(-1.5,1.5), y_range=Range1d(-1.5,1.5))
         plot.add_tools(HoverTool(tooltips=[("index", "@index")]), TapTool(), WheelZoomTool(), ResetTool(), PanTool())
 
-        graph_renderer = from_networkx(self.graph, nx.spring_layout, scale=1, center=(0,0), k=1)
+        if layout is None:
+            graph_renderer = from_networkx(self.graph, nx.spring_layout, scale=1, center=(0,0), k=1)
+        else:
+            graph_renderer = from_networkx(self.graph, nx.spring_layout, scale=1, center=(0,0), k=1)
 
         graph_renderer.node_renderer.glyph = Circle(size=15, fill_color=Spectral4[0])
         graph_renderer.node_renderer.selection_glyph = Circle(size=15, fill_color=Spectral4[2])
@@ -80,6 +83,44 @@ class CommitGraphDrawer:
         graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
 
         graph_renderer.selection_policy = NodesAndLinkedEdges()
+
+        if layout:
+            graph_renderer.layout_provider = StaticLayoutProvider(graph_layout=layout)
+
+        plot.renderers.append(graph_renderer)
+
+        output_file("interactive_graphs.html")
+        show(plot)
+
+    def draw_bokeh_software_as_cities(self, layout=None, routes=None):
+        """ Draw commit graph using Bokeh.
+        """
+
+        plot = Plot(sizing_mode="scale_height", x_range=Range1d(-1.5,1.5), y_range=Range1d(-1.5,1.5))
+        plot.add_tools(HoverTool(tooltips=[("index", "@index")]), TapTool(), WheelZoomTool(), ResetTool(), PanTool())
+
+        if layout is None:
+            graph_renderer = from_networkx(self.graph, nx.spring_layout, scale=1, center=(0,0), k=1)
+        else:
+            graph_renderer = from_networkx(self.graph, nx.spring_layout, scale=1, center=(0,0), k=1)
+
+        graph_renderer.node_renderer.glyph = Circle(size=15, fill_color=Spectral4[0])
+        graph_renderer.node_renderer.selection_glyph = Circle(size=15, fill_color=Spectral4[2])
+        graph_renderer.node_renderer.hover_glyph = Circle(size=15, fill_color=Spectral4[1])
+
+        graph_renderer.edge_renderer.glyph = MultiLine(line_color="#CCCCCC", line_alpha=0.8, line_width=1)
+        graph_renderer.edge_renderer.selection_glyph = MultiLine(line_color=Spectral4[2], line_width=5)
+        graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
+
+        data = graph_renderer.edge_renderer.data_source.data
+        normalization_value = max(list(routes.values()))
+        data["line_width"] = [routes[edge] * 10 / normalization_value for edge in zip(data["start"], data["end"])]
+        graph_renderer.edge_renderer.glyph.line_width = {'field': 'line_width'}
+
+        graph_renderer.selection_policy = NodesAndLinkedEdges()
+
+        if layout:
+            graph_renderer.layout_provider = StaticLayoutProvider(graph_layout=layout)
 
         plot.renderers.append(graph_renderer)
 

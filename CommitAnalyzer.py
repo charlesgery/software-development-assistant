@@ -121,12 +121,14 @@ class CommitAnalyzer:
     def retrieve_current_path(self, old_path):
 
         path = old_path
+        detect_endless_loop = 0
 
-        while path is not None and path not in self.repo_files_path:
+        while path is not None and path not in self.repo_files_path and detect_endless_loop < 50:
             if path in self.old_to_new_path:
                 path = self.old_to_new_path[path]
             else:
                 path = None
+            detect_endless_loop += 1
 
         return path
     
@@ -467,6 +469,7 @@ class CommitAnalyzer:
 
                     if current_path is not None:
                         modified_files.append(current_path)
+
 
                 pairs_of_modified_files = []
                 for i in range(len(modified_files)):
@@ -1090,7 +1093,7 @@ class CommitAnalyzer:
     def dimensionality_reduction(self, df, method='tSNE'):
 
         if method == 'tSNE':
-            tsne = sklearn.manifold.TSNE(n_components=2, perplexity=5)
+            tsne = sklearn.manifold.TSNE(n_components=2, perplexity=5, metric='precomputed')
             embedded_data = tsne.fit_transform(df)
 
         elif method == 'MCA':
@@ -1266,6 +1269,7 @@ class CommitAnalyzer:
         interesting_clusters = {}
         pool_of_lines = {}
 
+        print('\n\nInteresting clusters')
         for cluster, value in clusters_extended.items():
             if value[0] >= 2 and len(value[1]) >= 2:
                 print(f'Cluster {cluster}, num common mod {value[0]} : {value[1]}')
@@ -1446,21 +1450,145 @@ class CommitAnalyzer:
         return new_commit_graph, new_df
 
 
+    def display_interesting_clusters_extended(self, name):
 
+                
+        with open(name, "rb") as fp:
+            clusters_extended = pickle.load(fp)
+
+        interesting_clusters = 0
+        for cluster, value in clusters_extended.items():
+            modified_files = []
+            for function in value[1]:
+                file_name, _ = function.split(':')
+                if file_name not in modified_files:
+                    modified_files.append(file_name)
             
+            if len(modified_files) > 1 and value[0] > 2:
+                interesting_clusters += 1
+                print(f'Cluster {cluster} ({value[0]} common commits) : {value[1]}')
 
+        print(f'{interesting_clusters} interesting clusteres out of {len(clusters_extended)}')
+        # print(clusters_extended)
+
+    def draw_map(self, name, load_existing=False):
+
+        if not load_existing:
+            df = self.create_commits_dataframe()
+            df.to_csv(f'./df_{name}.csv')
+        else:
+            df = pd.read_csv('./df_flask', index_col=0)
+
+        if not load_existing:
+            distance = self.get_distance_matrix(df)
+            distance.to_csv(f'./df_distance_{name}.csv')
+        else:
+            distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
+        
+        clusters, clusters_labels = self.cluster_dataframe(
+                    distance,
+                    method='OPTICS',
+                    distance_matrix=True,
+                    min_size=3,
+                    max_eps=1)
+
+        with open("./clusters_{name}.txt", "wb") as fp:
+            pickle.dump(clusters, fp)
+        
+
+        clusters_extended = self.count_clusters_common_commits(df, clusters, lines=False)
+        print(clusters_extended)
+        
+        df_reduced = self.dimensionality_reduction(distance, method='tSNE')
+
+        cluster_to_route = self.find_routes(clusters, df)
+        cluster_centroid = self.find_centroids(df_reduced, clusters_labels)
+
+        print(f'C to route : {cluster_to_route}')
+        print(f'C c : {cluster_centroid}')
+
+        sac_graph = self.create_software_as_cities_graph(cluster_to_route, cluster_centroid)
+
+        print(f'Drawing')
+        drawer = CommitGraphDrawer.CommitGraphDrawer(sac_graph)
+        # drawer.draw_commit_missing_files_bokeh(modified_files)
+        drawer.draw_bokeh_software_as_cities(layout=cluster_centroid, routes=cluster_to_route)
+
+        # self.display_df(df_reduced, clusters_labels)
+
+    def find_routes(self, clusters, df):
+
+        cluster_to_commits = {}
+        for cluster_number, cluster_files in clusters.items():
+            cluster_to_commits[cluster_number] = []
+            for cluster_file in cluster_files:
+                for column in df.columns:
+                    if df.loc[cluster_file, column] == 1:
+                        cluster_to_commits[cluster_number].append(column)
+
+        cluster_to_route = {}
+        for cluster_a_number, cluster_a_commits in cluster_to_commits.items():
+            for cluster_b_number, cluster_b_commits in cluster_to_commits.items():
+
+                if cluster_a_number != cluster_b_number:
+                    number_common_commits = len(set(cluster_a_commits).intersection(set(cluster_b_commits)))
+                
+                    if (cluster_a_number, cluster_b_number) not in cluster_to_route and number_common_commits > 0:
+                        cluster_to_route[(cluster_a_number, cluster_b_number)] = number_common_commits
+
+        return cluster_to_route
+
+    def find_centroids(self, df, clusters_labels):
+        
+        X = df.iloc[:, 0]
+        Y = df.iloc[:, 1]
+
+        cluster_points = {}
+        for (x, y, label) in zip(X, Y, clusters_labels):
+
+            if label not in cluster_points:
+                cluster_points[label] = []
+            cluster_points[label].append((x, y))
+
+        cluster_centroid = {}
+        for cluster_label, points in cluster_points.items():
+            mean = [sum(ele) / len(points) for ele in zip(*points)]
+            cluster_centroid[int(cluster_label)] = mean
+
+        max_x = max([mean[0] for mean in cluster_centroid.values()])
+        max_y = max([mean[1] for mean in cluster_centroid.values()])
+
+        cluster_centroid = {cluster_label:(x/max_x, y/max_y) for cluster_label, (x,y) in cluster_centroid.items()}
+
+        return cluster_centroid
+
+    def create_software_as_cities_graph(self, cluster_to_route, cluster_centroid):
+
+        software_as_cities_graph = nx.Graph()
+
+        for cluster_label in cluster_centroid.keys():
+            software_as_cities_graph.add_node(cluster_label)
+
+        for route, route_value in cluster_to_route.items():
+
+            software_as_cities_graph.add_edge(*route)
+
+        return software_as_cities_graph
 
 
 
 if __name__ == "__main__":
     
 
+    
+
     # url = "https://github.com/apache/spark.git"
-    # url = "https://github.com/ishepard/pydriller.git"
+    # url = "https://github.com/scikit-learn/scikit-learn.git"
+    url = "https://github.com/ishepard/pydriller.git"
     # url = "https://github.com/oilshell/oil.git"
     # url = "https://github.com/smontanari/code-forensics.git"
     # url = "https://github.com/nvbn/thefuck.git"
-    url = "https://github.com/pallets/flask.git"
+    # url = "https://github.com/pallets/flask.git"
     
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
@@ -1497,34 +1625,33 @@ if __name__ == "__main__":
     ml_analyzer = ML_trainer.ML_trainer(ca.commit_graph)
     ml_analyzer.fit()
     """
+
+    print("Draw map")
+    ca.draw_map("pydriller")
     
     print("Clustering analysis")
-    
-    
+
+    '''
     df = ca.create_commits_dataframe()
-    df.to_csv('./df_flask.csv')
+    df.to_csv('./df.csv')
     # df = pd.read_csv('./df_flask', index_col=0)
 
     # df_lines = ca.create_commits_dataframe_lines()
     # df_lines.to_csv('./df_lines_flask.csv')
     # df_lines = pd.read_csv('./df_lines.csv', index_col=0)
 
-    df_methods = ca.create_commits_dataframe_functions()
-    df_methods.to_csv('./df_methods_flask.csv')
+    # df_methods = ca.create_commits_dataframe_functions()
+    # df_methods.to_csv('./df_methods_sklearn.csv')
     #df_methods = pd.read_csv('./df_methods_flask.csv', index_col=0)
 
-    print(df_methods)
-
-    distance = ca.get_distance_matrix(df_methods)
-    distance.to_csv('./df_distance_methods_flask.csv')
+    distance = ca.get_distance_matrix(df)
+    distance.to_csv('./df_distance.csv')
     # distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
     # print(distance)
 
     # data = pd.read_csv('./test.tsv_files_data.tsv', sep='\t', header=None)
     # metadata = pd.read_csv('./test.tsv_files_meta.tsv', sep='\t', header=0, index_col=0)
     # data.index = metadata.index
-    
-    
     
     clusters, clusters_labels = ca.cluster_dataframe(
                 distance,
@@ -1533,18 +1660,24 @@ if __name__ == "__main__":
                 min_size=3,
                 max_eps=1)
 
-    with open("./clusters_flask_methods.txt", "wb") as fp:
+    with open("./clusters.txt", "wb") as fp:
         pickle.dump(clusters, fp)
-    
+    '''
     
     '''
     with open("./clusters.txt", "rb") as fp:
         clusters = pickle.load(fp)
     # print(clusters)
     '''
-
-    clusters_extended = ca.count_clusters_common_commits(df_methods, clusters, lines=False)
+    '''
+    clusters_extended = ca.count_clusters_common_commits(df, clusters, lines=False)
     print(clusters_extended)
+    '''
+
+    '''
+    with open("./clusters_extended_sklearn_methods.txt", "wb") as fp:
+        pickle.dump(clusters_extended, fp)
+    
 
     for key, value in clusters_extended.items():
          print(f'Cluster {key}, num common mod {value[0]} : {value[1]}')
@@ -1552,6 +1685,7 @@ if __name__ == "__main__":
     ca.rearchitecture_clusters(clusters_extended, df)
 
     ca.analyze_clusters(clusters)
+    '''
     
     
 
@@ -1609,8 +1743,10 @@ if __name__ == "__main__":
     print("Same level correlation")
     # ca.compute_same_level_correlation('pydriller')
     
+    '''
     print("Drawing results")
     drawer = CommitGraphDrawer.CommitGraphDrawer(ca.commit_graph)
     # drawer.draw_commit_missing_files_bokeh(modified_files)
     drawer.draw_bokeh()
+    '''
     
