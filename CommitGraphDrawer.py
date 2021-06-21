@@ -1,3 +1,4 @@
+from os import stat
 import networkx as nx
 import matplotlib.pyplot as plt
 
@@ -112,10 +113,11 @@ class CommitGraphDrawer:
         graph_renderer.edge_renderer.selection_glyph = MultiLine(line_color=Spectral4[2], line_width=5)
         graph_renderer.edge_renderer.hover_glyph = MultiLine(line_color=Spectral4[1], line_width=5)
 
-        data = graph_renderer.edge_renderer.data_source.data
-        normalization_value = max(list(routes.values()))
-        data["line_width"] = [routes[edge] * 10 / normalization_value for edge in zip(data["start"], data["end"])]
-        graph_renderer.edge_renderer.glyph.line_width = {'field': 'line_width'}
+        if len(routes) > 0:
+            data = graph_renderer.edge_renderer.data_source.data
+            normalization_value = max(list(routes.values()))
+            data["line_width"] = [routes[edge] * 10 / normalization_value for edge in zip(data["start"], data["end"])]
+            graph_renderer.edge_renderer.glyph.line_width = {'field': 'line_width'}
 
         graph_renderer.selection_policy = NodesAndLinkedEdges()
 
@@ -177,3 +179,45 @@ class CommitGraphDrawer:
         """
 
         return '#%02x%02x%02x' % rgb
+
+    @staticmethod
+    def draw_threejs(citiesData, cluster_to_route):
+
+        template = """import { World } from './World/World.js';
+const citiesData = ["""
+
+        for city in citiesData:
+
+            template += '{ centroid : {x :' + str(city['centroid']['x']) +', y :' + str(str(city['centroid']['y'])) + '},'
+            template += 'buildings : ['
+            for building in city['buildings']:
+                parsed_name =  str(building['fileName']).replace('\\', '/')
+                template += '{height: ' + str(building['height']) + ', fileName:' + f"'{parsed_name}'" + '},'
+            template += '],'
+            template += 'cityLabel : ' + str(city['label']) + '},'
+        template += '];'
+
+        template += "const routesData = ["
+        for route, routeWidth in cluster_to_route.items():
+
+            template += '{ route : {start :' + str(route[0]) + ', end :' + str(route[1]) + '}, width : ' + str(routeWidth) + '},'
+
+        template += '];'
+
+        template += """\nfunction main() {
+// Get a reference to the container element
+const container = document.querySelector('#scene-container');
+
+// create a new world
+const world = new World(container, citiesData, routesData);
+
+// start the animation loop
+world.start();
+}
+
+main();"""
+
+        with open("./main.js", "w") as f:
+            f.write(template)
+
+        return template
