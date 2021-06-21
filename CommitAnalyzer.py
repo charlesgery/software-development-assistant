@@ -87,6 +87,8 @@ class CommitAnalyzer:
         # Create TreeGraph
         self.commit_tree_graph = TreeGraph.TreeGraph(self._get_repo_name_from_url(self.url), False)
 
+        # Commits
+        self.commits = []
 
         # Get list of files
         self.forbidden_file_extensions = ['.zip', '.gif', '.png']
@@ -106,6 +108,7 @@ class CommitAnalyzer:
         self.old_to_new_path = {}
         pbar = tqdm.tqdm(total=self.total_commits)
         for commit in self.repository_mining.traverse_commits():
+            self.commits.append(commit)
             for modification in commit.modified_files:
                 if modification.old_path != modification.new_path and modification.old_path is not None:
                     self.old_to_new_path[modification.old_path] = modification.new_path
@@ -450,14 +453,25 @@ class CommitAnalyzer:
                         commit_analysis=False, 
                         commit_lines_analysis=False, 
                         concurrent=False,
-                        single_line=None):
+                        single_line=None,
+                        get_dataframe=False):
         """ Find files/folders that are modified together (ie. in same commit).
         Update commit and TreeCommit graphs accordingly.
         """
 
+
         if treecommit_analysis or commit_analysis:
+
+            # Initialize variables to create a dataframe containing the commits
+            files_commits = {}
+            current_length = 0
+            columns = []
+
             pbar = tqdm.tqdm(total=self.total_commits)
-            for commit in self.repository_mining.traverse_commits():
+            for commit in self.commits:
+
+                current_length += 1
+                columns.append(commit.hash)
 
                 modified_files = []
                 for modification in commit.modified_files:
@@ -469,6 +483,18 @@ class CommitAnalyzer:
 
                     if current_path is not None:
                         modified_files.append(current_path)
+
+                        # Updating dataframe data
+                        if get_dataframe:
+                            if current_path in files_commits:
+
+                                while len(files_commits[current_path]) < current_length - 1:
+                                    files_commits[current_path].append(0)
+                                files_commits[current_path].append(1)
+                            
+                            else:
+                                files_commits[current_path] = [0 for _ in range(current_length-1)]
+                                files_commits[current_path].append(1)
 
 
                 pairs_of_modified_files = []
@@ -486,6 +512,22 @@ class CommitAnalyzer:
 
                 pbar.update(1)
             pbar.close()
+
+            # Create dataframe
+            if get_dataframe:
+                dataframe_list = []
+                index = []
+                for key, value in files_commits.items():
+
+                    if len(value) < current_length:
+
+                        while len(files_commits[key]) < current_length:
+                                files_commits[key].append(0)
+
+                    index.append(key)
+                    dataframe_list.append(value)
+
+                return pd.DataFrame(dataframe_list, index=index, columns=columns)
 
         # Commit Graph lines
         if commit_lines_analysis:
@@ -1123,7 +1165,7 @@ class CommitAnalyzer:
 
         return distance_df
 
-    def cluster_dataframe(self, df, method='HDBSCAN', distance_matrix=True, min_size=2, max_eps=None):
+    def cluster_dataframe(self, df, method='HDBSCAN', distance_matrix=True, min_size=2, max_eps=None, join_clusterless_samples=True):
 
         if method == 'HDBSCAN':
 
@@ -1141,19 +1183,58 @@ class CommitAnalyzer:
                 clusterer = sklearn.cluster.OPTICS(min_samples=min_size, n_jobs=4)
             clusterer.fit(df)
 
+        elif method == 'AggClustering':
+
+            if distance_matrix:
+                clusterer = sklearn.cluster.AgglomerativeClustering(
+                        n_clusters=None,
+                        affinity='precomputed',
+                        linkage='average',
+                        distance_threshold=0.95)
+            else:
+                clusterer = clusterer = sklearn.cluster.AgglomerativeClustering(
+                        n_clusters=None,
+                        distance_threshold=1)
+            clusterer.fit(df)
+
+        elif method == 'BIRCH':
+
+            if distance_matrix:
+                clusterer = sklearn.cluster.Birch(
+                        n_clusters=None)
+            else:
+                clusterer = sklearn.cluster.Birch(
+                        n_clusters=None,
+                        affinity='precomputed',
+                        distance_threshold=1)
+            clusterer.fit(df)
+
+        
+
         filenames = df.index.tolist()
         clusters = {}
+
+        cluster_labels = []
+
+        if not join_clusterless_samples:
+            backwards_index = -1
 
         for (filename, cluster) in zip(filenames, clusterer.labels_):
 
             filename = filename.replace("/", "\\")
 
+            if not join_clusterless_samples and cluster == -1:
+                cluster = backwards_index
+                backwards_index -= 1
+            
+            cluster_labels.append(cluster)
+            
             if cluster in clusters:
                 clusters[cluster].append(filename)
             else:
                 clusters[cluster] = [filename]
 
-        return clusters, clusterer.labels_
+        return clusters, cluster_labels
 
     def count_clusters_common_commits(self, df, clusters, lines=False):
 
@@ -1471,30 +1552,36 @@ class CommitAnalyzer:
         print(f'{interesting_clusters} interesting clusteres out of {len(clusters_extended)}')
         # print(clusters_extended)
 
-    def draw_map(self, name, load_existing=False):
+    def draw_map(self, name, load_existing=False, join_clusterless_samples=True):
 
         if not load_existing:
-            df = self.create_commits_dataframe()
+            df = self.analyze_correlation(
+                treecommit_analysis=False,
+                commit_analysis=True,
+                commit_lines_analysis=False,
+                get_dataframe=True)
+            # df = self.create_commits_dataframe()
             df.to_csv(f'./df_{name}.csv')
         else:
-            df = pd.read_csv('./df_flask', index_col=0)
+            df = pd.read_csv(f'./df_{name}', index_col=0)
 
         if not load_existing:
             distance = self.get_distance_matrix(df)
             distance.to_csv(f'./df_distance_{name}.csv')
         else:
-            distance = pd.read_csv('./df_distance_lines.csv', index_col=0)
+            distance = pd.read_csv(f'./df_distance_{name}.csv', index_col=0)
         
         clusters, clusters_labels = self.cluster_dataframe(
                     distance,
-                    method='OPTICS',
+                    method='AggClustering',
                     distance_matrix=True,
                     min_size=3,
-                    max_eps=1)
+                    max_eps=1,
+                    join_clusterless_samples=join_clusterless_samples)
+
 
         with open("./clusters_{name}.txt", "wb") as fp:
-            pickle.dump(clusters, fp)
-        
+            pickle.dump(clusters, fp)        
 
         clusters_extended = self.count_clusters_common_commits(df, clusters, lines=False)
         print(clusters_extended)
@@ -1510,9 +1597,29 @@ class CommitAnalyzer:
         sac_graph = self.create_software_as_cities_graph(cluster_to_route, cluster_centroid)
 
         print(f'Drawing')
+
+        
+        df["sum"] = df.sum(axis=1)
+
+        citiesData = []
+        for key in clusters_extended.keys():
+
+
+            cityData = {}
+            cityData['label'] = key
+            cityData['centroid'] = {'x':cluster_centroid[key][0], 'y':cluster_centroid[key][1]}
+            cityData['buildings'] = [{'height':df.loc[name, "sum"], 'fileName':name} for name in clusters_extended[key][1]]
+
+
+            citiesData.append(cityData)
+
+        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route)
+
+        """
         drawer = CommitGraphDrawer.CommitGraphDrawer(sac_graph)
         # drawer.draw_commit_missing_files_bokeh(modified_files)
         drawer.draw_bokeh_software_as_cities(layout=cluster_centroid, routes=cluster_to_route)
+        """
 
         # self.display_df(df_reduced, clusters_labels)
 
@@ -1602,7 +1709,7 @@ if __name__ == "__main__":
     
     print("Correlation analysis")
     # print(ca.get_commits_that_modified_line(10, 10, 'pydriller\\git_repository.py'))
-    ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
+    # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=True, commit_lines_analysis=False)
     # ca.save_graph(ca.commit_graph, './commit_graph.bz2')
     # start_time = time.time()
     # ca.analyze_correlation(treecommit_analysis=False, commit_analysis=False, commit_lines_analysis=True, concurrent=True)
@@ -1627,7 +1734,7 @@ if __name__ == "__main__":
     """
 
     print("Draw map")
-    ca.draw_map("pydriller")
+    ca.draw_map("pydriller", join_clusterless_samples=False)
     
     print("Clustering analysis")
 
