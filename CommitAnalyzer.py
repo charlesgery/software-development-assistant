@@ -20,8 +20,10 @@ import prince
 import numpy as np
 import copy
 import ast
+import math
 
 from sklearn import cluster
+from sklearn.metrics.pairwise import cosine_similarity
 
 import TreeGraph
 import compute_layout
@@ -454,7 +456,8 @@ class CommitAnalyzer:
                         commit_lines_analysis=False, 
                         concurrent=False,
                         single_line=None,
-                        get_dataframe=False):
+                        get_dataframe=False,
+                        get_commit_to_files_dict=False):
         """ Find files/folders that are modified together (ie. in same commit).
         Update commit and TreeCommit graphs accordingly.
         """
@@ -466,6 +469,8 @@ class CommitAnalyzer:
             files_commits = {}
             current_length = 0
             columns = []
+
+            commit_to_files = {}
 
             pbar = tqdm.tqdm(total=self.total_commits)
             for commit in self.commits:
@@ -496,6 +501,8 @@ class CommitAnalyzer:
                                 files_commits[current_path] = [0 for _ in range(current_length-1)]
                                 files_commits[current_path].append(1)
 
+                if get_commit_to_files_dict:
+                    commit_to_files[commit.hash] = modified_files
 
                 pairs_of_modified_files = []
                 for i in range(len(modified_files)):
@@ -513,6 +520,8 @@ class CommitAnalyzer:
                 pbar.update(1)
             pbar.close()
 
+            outputs = []
+
             # Create dataframe
             if get_dataframe:
                 dataframe_list = []
@@ -526,8 +535,14 @@ class CommitAnalyzer:
 
                     index.append(key)
                     dataframe_list.append(value)
+                
+                df = pd.DataFrame(dataframe_list, index=index, columns=columns)
+                outputs.append(df)
 
-                return pd.DataFrame(dataframe_list, index=index, columns=columns)
+            if get_commit_to_files_dict:
+                outputs.append(commit_to_files)
+
+            return outputs
 
         # Commit Graph lines
         if commit_lines_analysis:
@@ -1555,11 +1570,12 @@ class CommitAnalyzer:
     def draw_map(self, name, load_existing=False, join_clusterless_samples=True):
 
         if not load_existing:
-            df = self.analyze_correlation(
+            df, commit_to_files = self.analyze_correlation(
                 treecommit_analysis=False,
                 commit_analysis=True,
                 commit_lines_analysis=False,
-                get_dataframe=True)
+                get_dataframe=True,
+                get_commit_to_files_dict=True)
             # df = self.create_commits_dataframe()
             df.to_csv(f'./df_{name}.csv')
         else:
@@ -1613,7 +1629,7 @@ class CommitAnalyzer:
 
             citiesData.append(cityData)
 
-        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route)
+        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route, commit_to_files)
 
         """
         drawer = CommitGraphDrawer.CommitGraphDrawer(sac_graph)
@@ -1684,6 +1700,165 @@ class CommitAnalyzer:
 
 
 
+    def get_corpus(self):
+
+        file_to_identifiers = {}
+        for file_path in self.repo_files_path:
+
+            print(file_path)
+
+            try :
+                with open(self.repo_folder + '\\' + file_path) as data_source:
+                    ast_root = ast.parse(data_source.read())
+                    
+                identifiers = []
+
+                for node in ast.walk(ast_root):
+                    if isinstance(node, ast.Name):
+                        identifiers.append(node.id)
+                    elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.ClassDef):
+                        identifiers.append(node.name)
+
+                file_to_identifiers[file_path] = identifiers
+
+            except:
+                print('Not .py file')
+        
+        return file_to_identifiers
+
+    @staticmethod
+    def compute_voc(file_to_identifiers):
+
+        voc = set()
+
+        for _, value in file_to_identifiers.items():
+
+            for word in value:
+
+                if word not in voc:
+                    voc.add(word)
+
+        voc_size = len(voc)
+
+        voc_to_index = {}
+
+        i = 0
+        for word in voc:
+            voc_to_index[word] = i
+            i += 1
+
+        return voc_size, voc_to_index
+
+    @staticmethod
+    def compute_tf(voc_to_index, file_to_identifiers):
+
+        tf = {}
+
+        for file_path in file_to_identifiers.keys():
+
+            tf[file_path] = [0 for _ in range(len(voc_to_index))]
+
+            for word in file_to_identifiers[file_path]:
+
+                tf[file_path][voc_to_index[word]] += 1
+
+            num_identifiers = len(file_to_identifiers[file_path])
+
+            if num_identifiers > 0:
+                tf[file_path] = [value / num_identifiers for value in tf[file_path]]
+
+        return tf
+
+    @staticmethod
+    def compute_idf(voc_to_index, file_identifiers):
+
+        idf = {}
+
+        for word in voc_to_index.keys():
+
+            num_doc = 0
+
+            for identifiers in file_identifiers.values():
+
+                if word in identifiers:
+                    num_doc += 1
+
+            idf[word] = math.log(len(file_identifiers) / num_doc)
+
+        return idf
+
+    @staticmethod
+    def compute_tf_idf(voc_to_index, tf, idf):
+
+        tf_idf = {}
+
+        for file_path in tf.keys():
+
+            tf_idf[file_path] = [0 for _ in range(len(voc_to_index))]
+
+            for word, index in voc_to_index.items():
+
+                tf_idf[file_path][index] = tf[file_path][index] * idf[word]
+
+        return tf_idf
+
+    @staticmethod
+    def compute_cosine_distance(a, b):
+
+
+        norm_a = 0
+        norm_b = 0
+
+        dot = 0
+
+        for i in range(len(a)):
+
+            dot += a[i] * b[i]
+
+            norm_a += a[i] ** 2
+            norm_b += b[i] ** 2
+
+        norm_a = math.sqrt(norm_a)
+        norm_b = math.sqrt(norm_b)
+
+        return dot / (norm_a * norm_b)
+
+
+    def semantic_analysis(self):
+
+        file_to_identifiers = self.get_corpus()
+
+        voc_size, voc_to_index = self.compute_voc(file_to_identifiers)
+
+        tf = self.compute_tf(voc_to_index, file_to_identifiers)
+        idf = self.compute_idf(voc_to_index, file_to_identifiers)
+        tf_idf = self.compute_tf_idf(voc_to_index, tf, idf)
+
+
+        tf_idf_df = pd.DataFrame.from_dict(tf_idf, orient='index')
+
+        distance_matrix = cosine_similarity(tf_idf_df)
+        distance_df = pd.DataFrame(distance_matrix, index=tf_idf_df.index, columns=tf_idf_df.index)
+
+
+        correlated_files = set()
+        for file_path in file_to_identifiers.keys():
+            for file_path2 in file_to_identifiers.keys():
+
+                if file_path != file_path2:
+                    correlation = distance_df.loc[file_path, file_path2]
+                    if correlation > 0 and correlation < 1:
+                        files = sorted([file_path, file_path2])
+                        correlated_files.add((files[0], files[1], correlation))
+
+        correlated_files = sorted(list(correlated_files), key=lambda x: x[2], reverse=True)
+        
+        print(correlated_files)
+
+        # print(distance_df)
+
+
+
 if __name__ == "__main__":
     
 
@@ -1696,13 +1871,18 @@ if __name__ == "__main__":
     # url = "https://github.com/smontanari/code-forensics.git"
     # url = "https://github.com/nvbn/thefuck.git"
     # url = "https://github.com/pallets/flask.git"
-    
+    # url = "https://github.com/avajs/ava.git"
+    # url = "https://github.com/d3/d3.git"
+    # url = "https://github.com/deepfakes/faceswap.git"
+
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
     # ca.print_commits()
 
-    
-    print(ca.analyze_method(('./CommitAnalyzer.py', 'merge_nodes')))
+    # Semantic analysis
+    ca.semantic_analysis()
+
+    # print(ca.analyze_method(('./CommitAnalyzer.py', 'merge_nodes')))
 
     print("Running analysis")
 
@@ -1734,7 +1914,7 @@ if __name__ == "__main__":
     """
 
     print("Draw map")
-    ca.draw_map("pydriller", join_clusterless_samples=False)
+    # ca.draw_map("pydriller", join_clusterless_samples=False)
     
     print("Clustering analysis")
 
