@@ -21,6 +21,10 @@ import numpy as np
 import copy
 import ast
 import math
+import re
+import nltk
+
+from nltk.stem import PorterStemmer
 
 from sklearn import cluster
 from sklearn.metrics.pairwise import cosine_similarity
@@ -1823,10 +1827,57 @@ class CommitAnalyzer:
 
         return dot / (norm_a * norm_b)
 
+    @staticmethod
+    def split_sentence(word):
+
+        # Snake split
+        splitted_snake_sentence = word.split('_')
+
+        # camel_word = re.sub(r'_(.)', lambda m: m.group(1).upper(), word)
+
+        splitted_sentence = []
+        for snake_word in splitted_snake_sentence:
+            camel_words = re.findall(r'.+?(?:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|$)', snake_word)
+            for camel_word in camel_words:
+                splitted_sentence.append(camel_word)
+
+        return splitted_sentence
+
+    @staticmethod
+    def stem(word, stemmer):
+
+        return word
+
+    def preprocess_words(self, file_to_identifiers):
+
+        stemmer = PorterStemmer()
+
+        for key in file_to_identifiers.keys():
+
+            old_words = file_to_identifiers[key]
+            new_words = []
+
+            for i in range(len(old_words)):
+
+                splitted_sentence = self.split_sentence(old_words[i])
+                for word in splitted_sentence:
+                    new_words.append(word)
+
+
+            new_words = [str.lower(word) for word in new_words]
+            new_words = [stemmer.stem(word) for word in new_words]
+
+            file_to_identifiers[key] = new_words
+
+        
 
     def semantic_analysis(self):
 
         file_to_identifiers = self.get_corpus()
+
+        self.preprocess_words(file_to_identifiers)
+
+        print(file_to_identifiers)
 
         voc_size, voc_to_index = self.compute_voc(file_to_identifiers)
 
@@ -1838,6 +1889,8 @@ class CommitAnalyzer:
         tf_idf_df = pd.DataFrame.from_dict(tf_idf, orient='index')
 
         distance_matrix = cosine_similarity(tf_idf_df)
+        for i in range(len(distance_matrix)):
+            distance_matrix[i][i] = 1
         distance_df = pd.DataFrame(distance_matrix, index=tf_idf_df.index, columns=tf_idf_df.index)
 
 
@@ -1853,15 +1906,60 @@ class CommitAnalyzer:
 
         correlated_files = sorted(list(correlated_files), key=lambda x: x[2], reverse=True)
         
-        print(correlated_files)
+        for i in range(50):
+            print(correlated_files[i])
+
+        print(distance_df)
+
+        return distance_df
 
         # print(distance_df)
+
+    def draw_map_semantic(self, name, load_existing=False, join_clusterless_samples=True):
+
+        distance = self.semantic_analysis()
+
+        
+        clusters, clusters_labels = self.cluster_dataframe(
+                    distance,
+                    method='AggClustering',
+                    distance_matrix=True,
+                    min_size=3,
+                    max_eps=1,
+                    join_clusterless_samples=join_clusterless_samples)
+
+
+        with open("./clusters_semantic_{name}.txt", "wb") as fp:
+            pickle.dump(clusters, fp)        
+        
+        df_reduced = self.dimensionality_reduction(distance, method='tSNE')
+
+        cluster_centroid = self.find_centroids(df_reduced, clusters_labels)
+
+        print(clusters)
+        print(len(clusters))
+
+        citiesData = []
+
+        plt.scatter(df_reduced.iloc[:,0], df_reduced.iloc[:,1])
+        plt.show()
+        
+        for key in clusters.keys():
+
+
+            cityData = {}
+            cityData['label'] = key
+            cityData['centroid'] = {'x':cluster_centroid[key][0], 'y':cluster_centroid[key][1]}
+            cityData['buildings'] = [{'height':10, 'fileName':name} for name in clusters[key]]
+
+
+            citiesData.append(cityData)
+
+        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, {}, {})
 
 
 
 if __name__ == "__main__":
-    
-
     
 
     # url = "https://github.com/apache/spark.git"
@@ -1880,7 +1978,7 @@ if __name__ == "__main__":
     # ca.print_commits()
 
     # Semantic analysis
-    ca.semantic_analysis()
+    # ca.semantic_analysis()
 
     # print(ca.analyze_method(('./CommitAnalyzer.py', 'merge_nodes')))
 
@@ -1915,6 +2013,7 @@ if __name__ == "__main__":
 
     print("Draw map")
     # ca.draw_map("pydriller", join_clusterless_samples=False)
+    ca.draw_map_semantic("pydriller", join_clusterless_samples=False)
     
     print("Clustering analysis")
 
