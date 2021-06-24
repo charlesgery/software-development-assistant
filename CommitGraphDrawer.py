@@ -181,7 +181,7 @@ class CommitGraphDrawer:
         return '#%02x%02x%02x' % rgb
 
     @staticmethod
-    def draw_threejs(citiesData, cluster_to_route):
+    def draw_threejs(citiesData, cluster_to_route, commit_to_files, files_mod_dates):
 
         template = """import { World } from './World/World.js';
 const citiesData = ["""
@@ -195,21 +195,36 @@ const citiesData = ["""
                 template += '{height: ' + str(building['height']) + ', fileName:' + f"'{parsed_name}'" + '},'
             template += '],'
             template += 'cityLabel : ' + str(city['label']) + '},'
-        template += '];'
+        template += '];\n'
 
         template += "const routesData = ["
         for route, routeWidth in cluster_to_route.items():
 
             template += '{ route : {start :' + str(route[0]) + ', end :' + str(route[1]) + '}, width : ' + str(routeWidth) + '},'
 
-        template += '];'
+        template += '];\n'
+
+        template += 'const commitToFiles = {'
+        for key, value in commit_to_files.items():
+            parsed_values = [value[i].replace('\\', '/') for i in range(len(value))]
+            template += f'"{key}" : {parsed_values},'
+        template += '};\n'
+
+        template += 'const filesModificationsDates = {'
+        for key, value in files_mod_dates.items():
+            parsed_key = key.replace('\\', '/')
+            template += f"'{parsed_key}' : "
+            template += '{ creation_date : '
+            template += f'"{value["creation_date"]}", last_modification : "{value["last_modification"]}"'
+            template += '}, '
+        template += "};\n"
 
         template += """\nfunction main() {
 // Get a reference to the container element
 const container = document.querySelector('#scene-container');
 
 // create a new world
-const world = new World(container, citiesData, routesData);
+const world = new World(container, citiesData, routesData, commitToFiles);
 
 // start the animation loop
 world.start();

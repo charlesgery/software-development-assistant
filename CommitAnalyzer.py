@@ -461,7 +461,8 @@ class CommitAnalyzer:
                         concurrent=False,
                         single_line=None,
                         get_dataframe=False,
-                        get_commit_to_files_dict=False):
+                        get_commit_to_files_dict=False,
+                        get_dates=False):
         """ Find files/folders that are modified together (ie. in same commit).
         Update commit and TreeCommit graphs accordingly.
         """
@@ -474,10 +475,14 @@ class CommitAnalyzer:
             current_length = 0
             columns = []
 
+            files_modifications_date = {}
+
             commit_to_files = {}
 
             pbar = tqdm.tqdm(total=self.total_commits)
             for commit in self.commits:
+
+                commit_date = commit.committer_date
 
                 current_length += 1
                 columns.append(commit.hash)
@@ -491,7 +496,15 @@ class CommitAnalyzer:
                         current_path = self.retrieve_current_path(modification.new_path)
 
                     if current_path is not None:
+
                         modified_files.append(current_path)
+
+                        # Saving dates
+                        if get_dates:
+                            if current_path not in files_modifications_date:
+                                files_modifications_date[current_path] = {'creation_date': commit_date, 'last_modification': commit_date}
+                            else:
+                                files_modifications_date[current_path]['last_modification'] = commit_date
 
                         # Updating dataframe data
                         if get_dataframe:
@@ -545,6 +558,9 @@ class CommitAnalyzer:
 
             if get_commit_to_files_dict:
                 outputs.append(commit_to_files)
+
+            if get_dates:
+                outputs.append(files_modifications_date)
 
             return outputs
 
@@ -1149,8 +1165,6 @@ class CommitAnalyzer:
 
         return df
 
-       
-
     def dimensionality_reduction(self, df, method='tSNE'):
 
         if method == 'tSNE':
@@ -1574,12 +1588,13 @@ class CommitAnalyzer:
     def draw_map(self, name, load_existing=False, join_clusterless_samples=True):
 
         if not load_existing:
-            df, commit_to_files = self.analyze_correlation(
+            df, commit_to_files, files_mod_dates = self.analyze_correlation(
                 treecommit_analysis=False,
                 commit_analysis=True,
                 commit_lines_analysis=False,
                 get_dataframe=True,
-                get_commit_to_files_dict=True)
+                get_commit_to_files_dict=True,
+                get_dates=True)
             # df = self.create_commits_dataframe()
             df.to_csv(f'./df_{name}.csv')
         else:
@@ -1633,7 +1648,7 @@ class CommitAnalyzer:
 
             citiesData.append(cityData)
 
-        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route, commit_to_files)
+        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route, commit_to_files, files_mod_dates)
 
         """
         drawer = CommitGraphDrawer.CommitGraphDrawer(sac_graph)
@@ -1922,7 +1937,7 @@ class CommitAnalyzer:
         
         clusters, clusters_labels = self.cluster_dataframe(
                     distance,
-                    method='AggClustering',
+                    method='HDBSCAN',
                     distance_matrix=True,
                     min_size=3,
                     max_eps=1,
@@ -2012,8 +2027,8 @@ if __name__ == "__main__":
     """
 
     print("Draw map")
-    # ca.draw_map("pydriller", join_clusterless_samples=False)
-    ca.draw_map_semantic("pydriller", join_clusterless_samples=False)
+    ca.draw_map("pydriller", join_clusterless_samples=False)
+    # ca.draw_map_semantic("pydriller", join_clusterless_samples=False)
     
     print("Clustering analysis")
 
