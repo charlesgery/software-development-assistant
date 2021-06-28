@@ -224,7 +224,7 @@ const citiesData = ["""
 const container = document.querySelector('#scene-container');
 
 // create a new world
-const world = new World(container, citiesData, routesData, commitToFiles);
+const world = new World(container, citiesData, routesData, commitToFiles, filesModificationsDates);
 
 // start the animation loop
 world.start();

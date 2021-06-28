@@ -128,6 +128,9 @@ class CommitAnalyzer:
         atexit.register(self._cleanup)
 
     def retrieve_current_path(self, old_path):
+        """ Recursively retrieves the current path, given a (potentially)
+        old path.
+        """
 
         path = old_path
         detect_endless_loop = 0
@@ -198,18 +201,26 @@ class CommitAnalyzer:
                 shutil.rmtree(self._tmp_dir.name, ignore_errors=True)
 
     def save_graph(self, G, path):
+        """ Saves a graph in the pickle format.
+        """
 
         nx.readwrite.gpickle.write_gpickle(G, path)
 
     def load_commit_graph(self, path):
+        """ Loads a commit graph stored in the pickle format.
+        """
 
         self.commit_graph = nx.readwrite.gpickle.read_gpickle(path)
 
     def load_commit_graph_lines(self, path):
+        """ Loards a commit graphe for lines stored in the pickle format.
+        """
 
         self.commit_graph_lines = nx.readwrite.gpickle.read_gpickle(path)
         
     def find_lines_related_to_function(self, function_name, path):
+        """ Find the lines related to a given function and print them.
+        """
 
         modified_in_commits = self.get_commits_that_modified_function(function_name, path)
         self.find_related_lines(path, modified_in_commits)
@@ -232,6 +243,7 @@ class CommitAnalyzer:
         os.chdir(cwd)
         
     def find_related_lines(self, path, modified_in_commits):
+        
 
         related_lines = {}
         line_history = {}
@@ -398,6 +410,8 @@ class CommitAnalyzer:
 
 
     def get_commits_that_modified_line(self, start_line, end_line, path):
+        """ Get a list of commits in which the given lines of a given file were modified.
+        """
 
         # history = self.git_repo2.git.log('-L', f'{start_line},{end_line}:{path}').split('\n')
         history = subprocess.run(['git', 'log', '-L', f'{start_line},{end_line}:{path}', '--format=\"%H\"', '-s'], capture_output=True, encoding='utf_8').stdout.split('\n')
@@ -412,6 +426,8 @@ class CommitAnalyzer:
         return modified_in_commits
 
     def get_commits_that_modified_function(self, function_name, path):
+        """ Get a list of commits in which a function was modified.
+        """
 
 
         history = subprocess.run(['git', 'log', '-L', f':{function_name}:{path}', '--format=\"%H\"', '-s'], capture_output=True, encoding='utf_8').stdout.split('\n')
@@ -421,6 +437,8 @@ class CommitAnalyzer:
                     
     @staticmethod
     def interval_contained_in_list(list_intervals, interval):
+        """ Checks if an interval is contained in a list of intervals.
+        """
 
         for (a, b) in list_intervals:
 
@@ -431,6 +449,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def insert_interval_in_list(list_intervals, interval):
+        """ Inserts an interval in a list of intervals.
+        """
 
         merge_left, merge_right = False, False
         for (a, b) in list_intervals:
@@ -614,6 +634,9 @@ class CommitAnalyzer:
                 self.commit_tree_graph.add_edge(path_prefix_split, tree_commit_node_name1, tree_commit_node_name2)
 
     def analyze_correlation_commit_lines_graph(self):
+        """ Find lines that are modified together (ie. in sme commit).
+        Create an edge between them and update their value.
+        """
 
         commit_to_lines = {}
 
@@ -664,6 +687,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def get_file_number_of_lines(file_path):
+        """ Count the number of lines in a file.
+        """
         
         if os.path.getsize(file_path):
             with open(file_path, 'rb') as f:
@@ -676,6 +701,9 @@ class CommitAnalyzer:
         return linenumber
 
     def analyze_correlation_commit_lines_graph_concurent(self, single_line=None):
+        """ Same as analyze_correlation_commit_lines_graph() but performs the computations
+        concurently.
+        """
 
         cwd = os.getcwd()
         os.chdir(self.repo_folder)
@@ -772,12 +800,16 @@ class CommitAnalyzer:
         os.chdir(cwd)
 
     def analyze_line(self, file_line):
+        """ Returns the commits in which a line was modified.
+        """
 
         file_path, line = file_line
 
         return self.get_commits_that_modified_line(line, line, file_path)
 
     def analyze_method(self, file_method):
+        """ Returns the commits in which a function was modified.
+        """
 
         file_path, method = file_method
 
@@ -823,6 +855,9 @@ class CommitAnalyzer:
 
 
     def parse_neighbors_correlation(self, neighbors_correlation):
+        """ Parses the neighbor_correlation object created in compute_correlation() to merge
+        and remove useless intervals.
+        """
 
         correlation_intervals = {}
 
@@ -888,6 +923,9 @@ class CommitAnalyzer:
         compute_same_level_correlation_iteration(tree_graph, splitted_path)
 
     def compute_files_that_should_be_in_commit(self, commit_hash):
+        """ Returns a dictionnary containing for each file a score saying if it should be included
+        in a given commit.
+        """
 
         similar_commits = {}
         potential_nodes = set()
@@ -943,6 +981,9 @@ class CommitAnalyzer:
         return modified_files_dict
 
     def create_commits_dataframe(self):
+        """ Create a dataframe, with files as rows, commits as columns. The value
+        in a cell is 0 if a file was not in a commit, 1 otherwise.
+        """
 
         files_commits = {}
         current_length = 0
@@ -992,6 +1033,8 @@ class CommitAnalyzer:
 
 
     def create_commits_dataframe_lines(self):
+        """ Same as create_commits_dataframe() but with lines as rows instead of files.
+        """
 
         columns = []
 
@@ -1056,6 +1099,9 @@ class CommitAnalyzer:
         return pd.DataFrame(dataframe_list, index=index, columns=columns)
 
     def find_methods_in_python_file(self, file_path):
+        """ Returns a list of the names of all the methods included in 
+        a python file.
+        """
 
         methods = []
         o = open(file_path, "r", encoding='utf-8')
@@ -1070,6 +1116,8 @@ class CommitAnalyzer:
 
 
     def create_commits_dataframe_functions(self):
+        """ Same as create_commits_dataframe() but with functions instead of files as rows.
+        """
 
         columns = []
 
@@ -1143,6 +1191,9 @@ class CommitAnalyzer:
         return pd.DataFrame(dataframe_list, index=index, columns=columns)
 
     def create_commits_dataframe2(self):
+        """ DEPRECATED.
+        Creates a dataframe with files as rows, and engineered features as columns.
+        """
 
         columns = ['num_commits', 
                     #'average_num_files_in_commits',
@@ -1166,6 +1217,8 @@ class CommitAnalyzer:
         return df
 
     def dimensionality_reduction(self, df, method='tSNE'):
+        """ Performs a dimensionality reduction on a given dataframe, using the given method.
+        """
 
         if method == 'tSNE':
             tsne = sklearn.manifold.TSNE(n_components=2, perplexity=5, metric='precomputed')
@@ -1188,6 +1241,8 @@ class CommitAnalyzer:
         return df_embedded
 
     def get_distance_matrix(self, df):
+        """ Computes a distance matrix using the jaccard distance on the inputed dataframe.
+        """
 
         dist = sklearn.neighbors.DistanceMetric.get_metric('jaccard')
         distance_matrix = dist.pairwise(df.iloc[:,:].to_numpy())
@@ -1199,6 +1254,8 @@ class CommitAnalyzer:
         return distance_df
 
     def cluster_dataframe(self, df, method='HDBSCAN', distance_matrix=True, min_size=2, max_eps=None, join_clusterless_samples=True):
+        """ Clusters a dataframe using a given method.
+        """
 
         if method == 'HDBSCAN':
 
@@ -1270,6 +1327,10 @@ class CommitAnalyzer:
         return clusters, cluster_labels
 
     def count_clusters_common_commits(self, df, clusters, lines=False):
+        """ Counts the number of common commits between two clusters.
+        Takes a dataframe containing the commits as columns and the files/lines/... as rows.
+        Takes a dict containing the clusters.
+        """
 
         clusters_extended = {}
 
@@ -1298,6 +1359,8 @@ class CommitAnalyzer:
         return clusters_extended
 
     def display_df(self, df, clusters_labels):
+        """ Displays a 2D dataframe as a scatter plot using matplotlib.
+        """
 
         X = df.iloc[:, 0]
         Y = df.iloc[:, 1]
@@ -1312,12 +1375,15 @@ class CommitAnalyzer:
         plt.show()
                     
     def print_commits(self):
+        """ Print all the commits of a repo.
+        """
 
         for commit in self.repository_mining.traverse_commits():
             print(f'Commit : {commit.hash}')
             print(f'Parents : {commit.parents}')
 
     def analyze_clusters(self, clusters):
+
 
         print('Starting cluster analysis')
         cluster_to_files = {}
@@ -1379,6 +1445,8 @@ class CommitAnalyzer:
 
 
     def rearchitecture_clusters(self, clusters_extended, df):
+        """ Prints refactoring proposition given clusters and a dataframe containing
+        files/lines/... as rows and commits as columns."""
 
         interesting_clusters = {}
         pool_of_lines = {}
@@ -1453,6 +1521,8 @@ class CommitAnalyzer:
 
 
     def compute_file_lines(self, filename):
+        """ Couts the number of lines in a file.
+        """
 
         filepath = self.repo_folder + '\\' + filename
         if os.path.getsize(filepath):
@@ -1466,6 +1536,8 @@ class CommitAnalyzer:
         return lines
 
     def compute_entropy(self, commit_graph):
+        """ Compute the entropy of a commit graph.
+        """
 
         # Entropy computation is not perfect
         # * New size won't be the sum of old sizes exactly
@@ -1498,6 +1570,8 @@ class CommitAnalyzer:
 
     
     def merge_nodes(self, node1, node2, initial_commit_graph, df):
+        """ Merge nodes of commit graph.
+        """
 
         new_commit_graph = copy.deepcopy(initial_commit_graph)
 
@@ -1565,6 +1639,8 @@ class CommitAnalyzer:
 
 
     def display_interesting_clusters_extended(self, name):
+        """ Prints the clusters contained in the file 'name'.
+        """
 
                 
         with open(name, "rb") as fp:
@@ -1586,6 +1662,9 @@ class CommitAnalyzer:
         # print(clusters_extended)
 
     def draw_map(self, name, load_existing=False, join_clusterless_samples=True):
+        """ Creates a .js file that can be visualized in Software as cities fashion.
+        The visualization displays the logical couplings between files of a repo.
+        """
 
         if not load_existing:
             df, commit_to_files, files_mod_dates = self.analyze_correlation(
@@ -1659,6 +1738,8 @@ class CommitAnalyzer:
         # self.display_df(df_reduced, clusters_labels)
 
     def find_routes(self, clusters, df):
+        """ Find the routes between clusters for a Software as Cities visualization.
+        """
 
         cluster_to_commits = {}
         for cluster_number, cluster_files in clusters.items():
@@ -1681,6 +1762,8 @@ class CommitAnalyzer:
         return cluster_to_route
 
     def find_centroids(self, df, clusters_labels):
+        """ Find the centroids of the clusters in a Software as Cities visualization.
+        """
         
         X = df.iloc[:, 0]
         Y = df.iloc[:, 1]
@@ -1705,6 +1788,8 @@ class CommitAnalyzer:
         return cluster_centroid
 
     def create_software_as_cities_graph(self, cluster_to_route, cluster_centroid):
+        """ Creates a 2D simplified Software as Cities graph using matplotlib.
+        """
 
         software_as_cities_graph = nx.Graph()
 
@@ -1720,6 +1805,8 @@ class CommitAnalyzer:
 
 
     def get_corpus(self):
+        """ Get a list of identifiers of each file in a repo.
+        """
 
         file_to_identifiers = {}
         for file_path in self.repo_files_path:
@@ -1747,6 +1834,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def compute_voc(file_to_identifiers):
+        """ Compute the vocabulary of a repo (list of all the words).
+        """
 
         voc = set()
 
@@ -1770,6 +1859,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def compute_tf(voc_to_index, file_to_identifiers):
+        """ Compute the tf values for each file in repo.
+        """
 
         tf = {}
 
@@ -1790,6 +1881,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def compute_idf(voc_to_index, file_identifiers):
+        """ Compute the idf values for each file in repo.
+        """
 
         idf = {}
 
@@ -1808,6 +1901,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def compute_tf_idf(voc_to_index, tf, idf):
+        """ Compute the tf_idf values for each file in repo.
+        """
 
         tf_idf = {}
 
@@ -1823,6 +1918,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def compute_cosine_distance(a, b):
+        """ Compute the cosine distance between two vectors a and b.
+        """
 
 
         norm_a = 0
@@ -1844,6 +1941,8 @@ class CommitAnalyzer:
 
     @staticmethod
     def split_sentence(word):
+        """ Split a snake or camel case string into its composing words.
+        """
 
         # Snake split
         splitted_snake_sentence = word.split('_')
@@ -1860,10 +1959,14 @@ class CommitAnalyzer:
 
     @staticmethod
     def stem(word, stemmer):
+        """ Stems a word.
+        """
 
         return word
 
     def preprocess_words(self, file_to_identifiers):
+        """ Preprocess words for further analysis : stems, split and lower words.
+        """
 
         stemmer = PorterStemmer()
 
@@ -1887,6 +1990,9 @@ class CommitAnalyzer:
         
 
     def semantic_analysis(self):
+        """ Runs a semantic analysis on a repo to get a distance matrix containing the cosine distance
+        between each file.
+        """
 
         file_to_identifiers = self.get_corpus()
 
@@ -1930,10 +2036,20 @@ class CommitAnalyzer:
 
         # print(distance_df)
 
-    def draw_map_semantic(self, name, load_existing=False, join_clusterless_samples=True):
+    def draw_map_semantic(self, name, load_existing=False, join_clusterless_samples=True, logical_roads=False):
+        """ Same as draw_map() but with semantic analysis.
+        """
 
         distance = self.semantic_analysis()
 
+        # We need to run the analysis to get the dates
+        df, commit_to_files, files_mod_dates = self.analyze_correlation(
+                treecommit_analysis=False,
+                commit_analysis=True,
+                commit_lines_analysis=False,
+                get_dataframe=True,
+                get_commit_to_files_dict=True,
+                get_dates=True)
         
         clusters, clusters_labels = self.cluster_dataframe(
                     distance,
@@ -1951,13 +2067,19 @@ class CommitAnalyzer:
 
         cluster_centroid = self.find_centroids(df_reduced, clusters_labels)
 
+        cluster_to_route = {}
+        if logical_roads:
+            cluster_to_route = self.find_routes(clusters, df)
+
         print(clusters)
         print(len(clusters))
 
         citiesData = []
 
+        '''
         plt.scatter(df_reduced.iloc[:,0], df_reduced.iloc[:,1])
         plt.show()
+        '''
         
         for key in clusters.keys():
 
@@ -1970,7 +2092,7 @@ class CommitAnalyzer:
 
             citiesData.append(cityData)
 
-        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, {}, {})
+        CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route, {}, files_mod_dates)
 
 
 
@@ -1978,8 +2100,8 @@ if __name__ == "__main__":
     
 
     # url = "https://github.com/apache/spark.git"
-    # url = "https://github.com/scikit-learn/scikit-learn.git"
-    url = "https://github.com/ishepard/pydriller.git"
+    url = "https://github.com/scikit-learn/scikit-learn.git"
+    # url = "https://github.com/ishepard/pydriller.git"
     # url = "https://github.com/oilshell/oil.git"
     # url = "https://github.com/smontanari/code-forensics.git"
     # url = "https://github.com/nvbn/thefuck.git"
@@ -1987,6 +2109,10 @@ if __name__ == "__main__":
     # url = "https://github.com/avajs/ava.git"
     # url = "https://github.com/d3/d3.git"
     # url = "https://github.com/deepfakes/faceswap.git"
+    # url = "https://github.com/bee-san/pyWhat.git"
+    # url = "https://github.com/jina-ai/jina.git"
+    # url = "https://github.com/apache/airflow.git"
+    url = "https://github.com/keras-team/keras.git"
 
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
@@ -2027,7 +2153,7 @@ if __name__ == "__main__":
     """
 
     print("Draw map")
-    ca.draw_map("pydriller", join_clusterless_samples=False)
+    ca.draw_map_semantic("keras", join_clusterless_samples=False, logical_roads=True)
     # ca.draw_map_semantic("pydriller", join_clusterless_samples=False)
     
     print("Clustering analysis")
