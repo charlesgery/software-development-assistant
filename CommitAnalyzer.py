@@ -2094,14 +2094,88 @@ class CommitAnalyzer:
 
         CommitGraphDrawer.CommitGraphDrawer.draw_threejs(citiesData, cluster_to_route, {}, files_mod_dates)
 
+    def draw_hierarchical_edge_bundle(self, name, load_existing=False, join_clusterless_samples=True):
+        """ Creates a .js file that can be visualized in Software as cities fashion.
+        The visualization displays the logical couplings between files of a repo.
+        """
 
+        if not load_existing:
+            df, commit_to_files, files_mod_dates = self.analyze_correlation(
+                treecommit_analysis=False,
+                commit_analysis=True,
+                commit_lines_analysis=False,
+                get_dataframe=True,
+                get_commit_to_files_dict=True,
+                get_dates=True)
+            # df = self.create_commits_dataframe()
+            df.to_csv(f'./df_{name}.csv')
+        else:
+            df = pd.read_csv(f'./df_{name}', index_col=0)
+
+        if not load_existing:
+            distance = self.get_distance_matrix(df)
+            distance.to_csv(f'./df_distance_{name}.csv')
+        else:
+            distance = pd.read_csv(f'./df_distance_{name}.csv', index_col=0)
+        
+        clusters, _ = self.cluster_dataframe(
+                    distance,
+                    method='AggClustering',
+                    distance_matrix=True,
+                    min_size=3,
+                    max_eps=1,
+                    join_clusterless_samples=join_clusterless_samples)
+
+
+        with open("./clusters_{name}.txt", "wb") as fp:
+            pickle.dump(clusters, fp)        
+
+        template = '['
+
+        first_file = True
+        for cluster in clusters.keys():
+            for file_path in clusters[cluster]:
+
+                parsed_file_path = file_path.replace("\\", "/")
+
+                if first_file:
+                    template += '{"name": ' + f'"root${cluster}${parsed_file_path}", "couplings":['
+                    first_file = False
+                else:
+                    template += ',\n{"name": ' + f'"root${cluster}${parsed_file_path}", "couplings":['
+
+                first = True
+                for neighbor in self.commit_graph[file_path]:
+
+                    n_cluster = -1
+                    for c in clusters.keys():
+                        if neighbor in clusters[c]:
+                            n_cluster = c
+                            break
+                    
+                    parsed_neighbor = neighbor.replace("\\", "/")
+
+                    if first:
+                        template += f'"root${n_cluster}${parsed_neighbor}"'
+                        first = False
+                    else:
+                        template += f',"root${n_cluster}${parsed_neighbor}"'
+                
+                
+                template += ']}'
+
+        template += ']'
+
+        with open('data.json', "w") as f:
+           f.write(template)
+        
 
 if __name__ == "__main__":
     
 
     # url = "https://github.com/apache/spark.git"
-    url = "https://github.com/scikit-learn/scikit-learn.git"
-    # url = "https://github.com/ishepard/pydriller.git"
+    # url = "https://github.com/scikit-learn/scikit-learn.git"
+    url = "https://github.com/ishepard/pydriller.git"
     # url = "https://github.com/oilshell/oil.git"
     # url = "https://github.com/smontanari/code-forensics.git"
     # url = "https://github.com/nvbn/thefuck.git"
@@ -2112,7 +2186,7 @@ if __name__ == "__main__":
     # url = "https://github.com/bee-san/pyWhat.git"
     # url = "https://github.com/jina-ai/jina.git"
     # url = "https://github.com/apache/airflow.git"
-    url = "https://github.com/keras-team/keras.git"
+    # url = "https://github.com/keras-team/keras.git"
 
     print("Init CommitAnalyzer")
     ca = CommitAnalyzer(url)
@@ -2153,8 +2227,9 @@ if __name__ == "__main__":
     """
 
     print("Draw map")
-    ca.draw_map_semantic("keras", join_clusterless_samples=False, logical_roads=True)
+    # ca.draw_map("flask", join_clusterless_samples=False)
     # ca.draw_map_semantic("pydriller", join_clusterless_samples=False)
+    ca.draw_hierarchical_edge_bundle("pydriller", join_clusterless_samples=False)
     
     print("Clustering analysis")
 
